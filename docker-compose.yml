@@ -1,0 +1,86 @@
+version: "3.8"
+
+services:
+  # ---- AI Engine Backend ----
+  ai-engine:
+    build: ./ai-engine
+    container_name: vision-ai-engine
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_NAME=Vision-AI Engine
+      - DEBUG=false
+      - DATABASE_URL=sqlite+aiosqlite:///./data/vision_ai.db
+      - REDIS_URL=redis://redis:6379/0
+      - MQTT_BROKER=mqtt
+      - MQTT_PORT=1883
+      - UPLOAD_DIR=/app/data/uploads
+      - MODEL_DIR=/app/data/models
+      - DATASET_DIR=/app/data/datasets
+      - DEFAULT_MODEL=yolov8n.pt
+      - CORS_ORIGINS=["http://localhost:3000","http://localhost:80"]
+    volumes:
+      - ai-data:/app/data
+    depends_on:
+      - redis
+      - mqtt
+    restart: unless-stopped
+    networks:
+      - vision-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---- Web Application ----
+  web-app:
+    build: ./web-app
+    container_name: vision-ai-web
+    ports:
+      - "80:80"
+    depends_on:
+      - ai-engine
+    restart: unless-stopped
+    networks:
+      - vision-net
+
+  # ---- Redis Cache ----
+  redis:
+    image: redis:7-alpine
+    container_name: vision-ai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - vision-net
+
+  # ---- MQTT Broker ----
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: vision-ai-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mqtt-data:/mosquitto/data
+      - mqtt-log:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - vision-net
+
+volumes:
+  ai-data:
+  redis-data:
+  mqtt-data:
+  mqtt-log:
+
+networks:
+  vision-net:
+    driver: bridge
