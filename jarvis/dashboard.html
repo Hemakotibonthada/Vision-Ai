@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis AI - Dashboard</title>
+    <style>
+        :root {
+            --bg: #0a0e17;
+            --surface: #111827;
+            --surface2: #1a2332;
+            --accent: #00d4ff;
+            --accent2: #7c3aed;
+            --green: #10b981;
+            --red: #ef4444;
+            --yellow: #f59e0b;
+            --text: #e5e7eb;
+            --muted: #6b7280;
+            --border: #1f2937;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--surface), var(--surface2));
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header .status-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-watching { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid var(--green); }
+        .status-sleeping { background: rgba(107,114,128,0.15); color: var(--muted); border: 1px solid var(--muted); }
+        .status-owner_present { background: rgba(0,212,255,0.15); color: var(--accent); border: 1px solid var(--accent); }
+        .status-listening { background: rgba(124,58,237,0.15); color: var(--accent2); border: 1px solid var(--accent2); }
+        .status-intruder_alert { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid var(--red); animation: pulse 1s infinite; }
+        .status-initializing, .status-executing, .status-learning {
+            background: rgba(245,158,11,0.15); color: var(--yellow); border: 1px solid var(--yellow);
+        }
+
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        /* Grid Layout */
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            padding: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .card h3 {
+            font-size: 14px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        /* Camera Feed */
+        .camera-card { grid-column: 1 / 3; grid-row: 1 / 3; }
+        .camera-card img {
+            width: 100%;
+            border-radius: 8px;
+            background: #000;
+            min-height: 300px;
+            object-fit: contain;
+        }
+
+        /* Stats */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .stat {
+            background: var(--surface2);
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat .value {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat .label {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        /* Command Input */
+        .command-section {
+            grid-column: 1 / 4;
+        }
+        .command-row {
+            display: flex;
+            gap: 8px;
+        }
+        .command-input {
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 15px;
+            outline: none;
+        }
+        .command-input:focus { border-color: var(--accent); }
+        .command-btn {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .command-btn:hover { opacity: 0.9; }
+
+        /* Event Log */
+        .log-card { grid-column: 1 / 4; }
+        .event-list {
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Cascadia Code', 'Fira Code', monospace;
+            font-size: 12px;
+        }
+        .event-item {
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 12px;
+        }
+        .event-item .time { color: var(--muted); min-width: 80px; }
+        .event-item .type { color: var(--accent); min-width: 100px; font-weight: 600; }
+        .event-item .msg { color: var(--text); }
+
+        /* Quick Actions */
+        .actions-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .action-btn {
+            padding: 10px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .action-btn:hover { border-color: var(--accent); background: rgba(0,212,255,0.1); }
+
+        /* Intruder Gallery */
+        .intruder-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 8px;
+        }
+        .intruder-gallery img {
+            width: 100%;
+            border-radius: 6px;
+            border: 2px solid var(--red);
+            cursor: pointer;
+        }
+
+        /* Face registration */
+        .face-reg { text-align: center; }
+        .face-reg input[type="text"] {
+            padding: 8px 12px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            margin-bottom: 8px;
+            width: 100%;
+        }
+        .face-reg .reg-btn {
+            padding: 8px 20px;
+            background: var(--green);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        /* Room state */
+        .room-indicator {
+            text-align: center;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+        .room-empty { background: rgba(107,114,128,0.1); }
+        .room-owner { background: rgba(0,212,255,0.1); }
+        .room-intruder { background: rgba(239,68,68,0.1); }
+        .room-indicator .icon { font-size: 36px; margin-bottom: 8px; }
+        .room-indicator .label { font-size: 14px; font-weight: 600; }
+
+        /* Response area */
+        .response-area {
+            background: var(--surface2);
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 8px;
+            min-height: 40px;
+            font-style: italic;
+            color: var(--accent);
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .dashboard { grid-template-columns: 1fr; }
+            .camera-card, .command-section, .log-card { grid-column: 1; grid-row: auto; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>JARVIS AI</h1>
+    <span id="stateBadge" class="status-badge status-initializing">INITIALIZING</span>
+</div>
+
+<div class="dashboard">
+    <!-- Camera Feed -->
+    <div class="card camera-card">
+        <h3>Live Camera Feed</h3>
+        <img id="cameraFeed" src="/api/camera/stream" alt="Camera Feed" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22640%22 height=%22480%22><rect fill=%22%23111%22 width=%22640%22 height=%22480%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23555%22 text-anchor=%22middle%22 font-family=%22sans-serif%22 font-size=%2220%22>Camera Offline</text></svg>'">
+    </div>
+
+    <!-- System Stats -->
+    <div class="card">
+        <h3>System Stats</h3>
+        <div class="stat-grid">
+            <div class="stat">
+                <div class="value" id="uptimeVal">0</div>
+                <div class="label">Uptime (min)</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="commandsVal">0</div>
+                <div class="label">Commands</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="greetingsVal">0</div>
+                <div class="label">Greetings</div>
+            </div>
+            <div class="stat">
+                <div class="value" id="intruderVal">0</div>
+                <div class="label">Intruders</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Room Presence -->
+    <div class="card">
+        <h3>Room Presence</h3>
+        <div id="roomIndicator" class="room-indicator room-empty">
+            <div class="icon" id="roomIcon">🌙</div>
+            <div class="label" id="roomLabel">Empty</div>
+        </div>
+        <div id="faceCount" style="text-align:center; color:var(--muted); font-size:13px;">0 faces detected</div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card">
+        <h3>Quick Actions</h3>
+        <div class="actions-grid">
+            <button class="action-btn" onclick="sendCmd('all lights on')">💡 All Lights On</button>
+            <button class="action-btn" onclick="sendCmd('all lights off')">🌑 All Lights Off</button>
+            <button class="action-btn" onclick="sendCmd('status')">📊 Status</button>
+            <button class="action-btn" onclick="sendCmd('temperature')">🌡️ Temperature</button>
+            <button class="action-btn" onclick="jarvisAction('sleep')">😴 Sleep</button>
+            <button class="action-btn" onclick="jarvisAction('wake')">⏰ Wake Up</button>
+            <button class="action-btn" onclick="takeSnapshot()">📸 Snapshot</button>
+            <button class="action-btn" onclick="sendCmd('security status')">🔒 Security</button>
+        </div>
+    </div>
+
+    <!-- Face Registration -->
+    <div class="card">
+        <h3>Face Registration</h3>
+        <div class="face-reg">
+            <input type="text" id="ownerName" placeholder="Your name (default: Sir)" />
+            <button class="reg-btn" onclick="registerFace()">📷 Register My Face (Camera)</button>
+            <div id="regStatus" style="margin-top:8px; font-size:12px; color:var(--muted);"></div>
+        </div>
+    </div>
+
+    <!-- Command Input -->
+    <div class="card command-section">
+        <h3>Command</h3>
+        <div class="command-row">
+            <input type="text" class="command-input" id="commandInput" placeholder="Type a command... (e.g., turn on living room light)"
+                   onkeydown="if(event.key==='Enter')sendInput()">
+            <button class="command-btn" onclick="sendInput()">Send</button>
+        </div>
+        <div class="response-area" id="responseArea">Waiting for command...</div>
+    </div>
+
+    <!-- Intruder Photos -->
+    <div class="card">
+        <h3>Intruder Gallery</h3>
+        <div class="intruder-gallery" id="intruderGallery">
+            <p style="color:var(--muted); font-size:12px; grid-column:1/-1;">No intruder photos.</p>
+        </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card log-card">
+        <h3>Event Log</h3>
+        <div class="event-list" id="eventLog"></div>
+    </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let ws = null;
+
+// ---- WebSocket ----
+function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onopen = () => addLog('system', 'WebSocket connected');
+    ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleWSMessage(msg);
+    };
+    ws.onclose = () => {
+        addLog('system', 'WebSocket disconnected. Reconnecting...');
+        setTimeout(connectWS, 3000);
+    };
+}
+
+function handleWSMessage(msg) {
+    if (msg.type === 'init') {
+        updateState(msg.data.state);
+        updateRoom(msg.data.room || {});
+        if (msg.data.stats) updateStats(msg.data.stats);
+    } else if (msg.type === 'state_change') {
+        updateState(msg.data.to);
+        addLog('state', `${msg.data.from} → ${msg.data.to} (${msg.data.reason})`);
+    } else if (msg.type === 'command_response') {
+        document.getElementById('responseArea').textContent = msg.data.response;
+    }
+}
+
+// ---- State Badge ----
+function updateState(state) {
+    const badge = document.getElementById('stateBadge');
+    badge.textContent = state.replace('_', ' ').toUpperCase();
+    badge.className = 'status-badge status-' + state;
+}
+
+// ---- Room ----
+function updateRoom(room) {
+    const ind = document.getElementById('roomIndicator');
+    const icon = document.getElementById('roomIcon');
+    const label = document.getElementById('roomLabel');
+    const fc = document.getElementById('faceCount');
+
+    const p = room.presence || 'empty';
+    ind.className = 'room-indicator';
+    if (p === 'owner_present') { ind.classList.add('room-owner'); icon.textContent = '👤'; label.textContent = room.owner_name || 'Owner'; }
+    else if (p === 'unknown_person' || p === 'multiple_people') { ind.classList.add('room-intruder'); icon.textContent = '⚠️'; label.textContent = 'Unknown Person!'; }
+    else { ind.classList.add('room-empty'); icon.textContent = '🌙'; label.textContent = 'Empty'; }
+
+    fc.textContent = `${room.num_faces || 0} faces detected`;
+}
+
+// ---- Stats ----
+function updateStats(stats) {
+    document.getElementById('uptimeVal').textContent = Math.floor((stats.uptime_seconds || 0) / 60);
+    document.getElementById('commandsVal').textContent = stats.commands_processed || 0;
+    document.getElementById('greetingsVal').textContent = stats.owner_greetings || 0;
+    document.getElementById('intruderVal').textContent = stats.intruder_alerts || 0;
+}
+
+// ---- Commands ----
+async function sendCmd(cmd) {
+    try {
+        const resp = await fetch(`${API}/api/command?command=${encodeURIComponent(cmd)}`, { method: 'POST' });
+        const data = await resp.json();
+        document.getElementById('responseArea').textContent = data.response || JSON.stringify(data);
+        updateState(data.state || 'watching');
+        addLog('command', `${cmd} → ${data.response || ''}`);
+    } catch (e) {
+        document.getElementById('responseArea').textContent = 'Error: ' + e.message;
+    }
+}
+
+function sendInput() {
+    const input = document.getElementById('commandInput');
+    if (input.value.trim()) {
+        sendCmd(input.value.trim());
+        input.value = '';
+    }
+}
+
+// ---- Actions ----
+async function jarvisAction(action) {
+    try {
+        const resp = await fetch(`${API}/api/state/${action}`, { method: 'POST' });
+        const data = await resp.json();
+        updateState(data.state);
+    } catch (e) {}
+}
+
+async function takeSnapshot() {
+    window.open(`${API}/api/camera/snapshot`, '_blank');
+}
+
+async function registerFace() {
+    const name = document.getElementById('ownerName').value || 'Sir';
+    const status = document.getElementById('regStatus');
+    try {
+        const resp = await fetch(`${API}/api/face/register-owner-camera?name=${encodeURIComponent(name)}`, { method: 'POST' });
+        const data = await resp.json();
+        status.textContent = data.status === 'success' ? `✅ Registered as "${data.name}"` : `❌ ${data.detail || 'Failed'}`;
+        status.style.color = data.status === 'success' ? 'var(--green)' : 'var(--red)';
+    } catch (e) {
+        status.textContent = '❌ ' + e.message;
+        status.style.color = 'var(--red)';
+    }
+}
+
+// ---- Event Log ----
+function addLog(type, msg) {
+    const log = document.getElementById('eventLog');
+    const now = new Date().toLocaleTimeString();
+    const item = document.createElement('div');
+    item.className = 'event-item';
+    item.innerHTML = `<span class="time">${now}</span><span class="type">${type}</span><span class="msg">${msg}</span>`;
+    log.prepend(item);
+    if (log.children.length > 100) log.removeChild(log.lastChild);
+}
+
+// ---- Intruder Gallery ----
+async function loadIntruderPhotos() {
+    try {
+        const resp = await fetch(`${API}/api/security/intruder-photos`);
+        const photos = await resp.json();
+        const gallery = document.getElementById('intruderGallery');
+        if (photos.length === 0) return;
+        gallery.innerHTML = '';
+        photos.forEach(p => {
+            const img = document.createElement('img');
+            img.src = p.url;
+            img.alt = p.filename;
+            img.onclick = () => window.open(p.url, '_blank');
+            gallery.appendChild(img);
+        });
+    } catch (e) {}
+}
+
+// ---- Polling ----
+async function pollStatus() {
+    try {
+        const resp = await fetch(`${API}/api/status`);
+        const data = await resp.json();
+        if (data.jarvis) {
+            updateState(data.jarvis.state);
+            if (data.jarvis.stats) updateStats(data.jarvis.stats);
+        }
+        if (data.room) updateRoom(data.room);
+    } catch (e) {}
+}
+
+// ---- Init ----
+connectWS();
+setInterval(pollStatus, 5000);
+setInterval(loadIntruderPhotos, 30000);
+loadIntruderPhotos();
+addLog('system', 'Dashboard loaded');
+</script>
+
+</body>
+</html>
