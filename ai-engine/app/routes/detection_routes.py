@@ -134,7 +134,8 @@ async def grad_cam_visualization(
 @router.get("/models")
 async def list_models():
     """List loaded models."""
-    return detection_service.get_stats()
+    stats = detection_service.get_stats()
+    return [{"name": m, "type": "YOLO", "active": m == stats.get("active_model")} for m in stats.get("loaded_models", [])]
 
 
 @router.post("/models/load")

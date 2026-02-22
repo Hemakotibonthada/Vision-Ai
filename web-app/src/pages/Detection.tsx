@@ -151,7 +151,7 @@ export default function Detection() {
           <div className="card">
             <h3 className="text-sm font-semibold mb-3">Loaded Models</h3>
             <div className="space-y-2">
-              {(models?.data || []).map((m: any, i: number) => (
+              {(Array.isArray(models?.data) ? models.data : []).map((m: any, i: number) => (
                 <div key={i} className="flex items-center justify-between p-2 bg-dark-900 rounded-lg text-sm">
                   <span className="text-dark-200">{m.name || m}</span>
                   <span className="badge-info">{m.type || 'YOLO'}</span>
