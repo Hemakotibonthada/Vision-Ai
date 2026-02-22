@@ -230,26 +230,26 @@ async def register_owner_face(
         raise HTTPException(400, "Invalid image")
 
     owner_name = name or settings.OWNER_NAME
-    success = face_service.register_owner(owner_name, frame)
+    result = face_service.register_owner(frame, owner_name)
 
-    if success:
-        return {"status": "success", "name": owner_name}
-    raise HTTPException(400, "No face detected in image")
+    if result.get("success"):
+        return {"status": "success", "name": owner_name, **result}
+    raise HTTPException(400, result.get("error", "No face detected in image"))
 
 
 @app.post("/api/face/register-owner-camera")
 async def register_owner_from_camera(name: str = Query(default=None)):
     """Register the owner's face from the live camera."""
-    frame = camera_service.get_latest_frame()
+    frame = camera_service.get_frame()
     if frame is None:
-        raise HTTPException(503, "Camera not available")
+        raise HTTPException(503, "Camera not available. Start the camera first via /api/camera/start")
 
     owner_name = name or settings.OWNER_NAME
-    success = face_service.register_owner(owner_name, frame)
+    result = face_service.register_owner(frame, owner_name)
 
-    if success:
-        return {"status": "success", "name": owner_name}
-    raise HTTPException(400, "No face detected")
+    if result.get("success"):
+        return {"status": "success", "name": owner_name, **result}
+    raise HTTPException(400, result.get("error", "No face detected"))
 
 
 @app.post("/api/face/register-person")
@@ -278,7 +278,7 @@ async def register_known_person(
 @app.get("/api/face/recognize")
 async def recognize_current():
     """Recognize faces in the current camera frame."""
-    frame = camera_service.get_latest_frame()
+    frame = camera_service.get_frame()
     if frame is None:
         raise HTTPException(503, "Camera not available")
 

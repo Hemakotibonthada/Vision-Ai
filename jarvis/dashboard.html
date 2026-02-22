@@ -448,11 +448,18 @@ async function takeSnapshot() {
 async function registerFace() {
     const name = document.getElementById('ownerName').value || 'Sir';
     const status = document.getElementById('regStatus');
+    status.textContent = 'Registering...';
+    status.style.color = 'var(--blue)';
     try {
         const resp = await fetch(`${API}/api/face/register-owner-camera?name=${encodeURIComponent(name)}`, { method: 'POST' });
         const data = await resp.json();
-        status.textContent = data.status === 'success' ? `✅ Registered as "${data.name}"` : `❌ ${data.detail || 'Failed'}`;
-        status.style.color = data.status === 'success' ? 'var(--green)' : 'var(--red)';
+        if (resp.ok) {
+            status.textContent = `✅ Registered as "${data.name}" (${data.total_samples || 1} samples)`;
+            status.style.color = 'var(--green)';
+        } else {
+            status.textContent = `❌ ${data.detail || 'Registration failed'}`;
+            status.style.color = 'var(--red)';
+        }
     } catch (e) {
         status.textContent = '❌ ' + e.message;
         status.style.color = 'var(--red)';
