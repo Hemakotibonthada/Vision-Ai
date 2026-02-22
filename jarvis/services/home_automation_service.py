@@ -1,8 +1,9 @@
-w"""
-Jarvis AI - Home Automation Service
-======================================
-Controls ESP32 relays, sensors, and smart home devices.
-Bridges Jarvis commands to the ESP32 server.
+"""
+Jarvis AI - Home Automation Service v3.0
+==========================================
+Controls ESP32 relays, sensors, door, lock, schedules, camera,
+and smart home devices. Bridges Jarvis commands to ESP32 boards.
+Integrates with MQTT bridge and ESP32 manager services.
 """
 import asyncio
 import json
@@ -17,18 +18,35 @@ from jarvis.config import settings
 
 
 class HomeAutomationService:
-    """Controls smart home devices via ESP32 server."""
+    """Controls smart home devices via ESP32 server and camera."""
 
     def __init__(self):
         self.base_url = f"{settings.ESP32_SERVER_URL}{settings.ESP32_API_PREFIX}"
+        self.cam_url = getattr(settings, "ESP32_CAM_URL", "http://192.168.1.102")
         self._device_states: Dict = {}
         self._sensor_data: Dict = {}
+        self._door_state: str = "unknown"
+        self._lock_state: str = "unknown"
         self._last_sensor_read = 0
+        self._last_heartbeat: Dict = {}
+        self._schedules: List[Dict] = []
         self._room_names = [
             "Living Room", "Bedroom", "Kitchen", "Bathroom",
             "Garage", "Porch", "Study", "Spare"
         ]
-        logger.info(f"Home automation service initialized. ESP32: {settings.ESP32_SERVER_URL}")
+        self._mqtt_bridge = None
+        self._esp32_manager = None
+        logger.info(f"Home automation service v3.0 initialized. ESP32: {settings.ESP32_SERVER_URL}")
+
+    def set_mqtt_bridge(self, bridge):
+        """Set MQTT bridge reference for real-time control."""
+        self._mqtt_bridge = bridge
+        logger.info("MQTT bridge linked to home automation service")
+
+    def set_esp32_manager(self, manager):
+        """Set ESP32 manager reference."""
+        self._esp32_manager = manager
+        logger.info("ESP32 manager linked to home automation service")
 
     # ================================================================
     # Relay / Switch Control
@@ -163,14 +181,162 @@ class HomeAutomationService:
             return {"error": str(e)}
 
     # ================================================================
+    # Door Sensor
+    # ================================================================
+    async def get_door_status(self) -> Dict:
+        """Get door sensor and lock status."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{self.base_url}/door/status")
+                data = resp.json()
+                self._door_state = data.get("door", "unknown")
+                self._lock_state = data.get("lock", "unknown")
+                return data
+        except Exception as e:
+            logger.error(f"Get door status failed: {e}")
+            return {"error": str(e)}
+
+    def is_door_open(self) -> bool:
+        return self._door_state == "open"
+
+    def is_locked(self) -> bool:
+        return self._lock_state == "locked"
+
+    # ================================================================
+    # Servo Lock Control
+    # ================================================================
+    async def set_lock(self, locked: bool) -> Dict:
+        """Lock or unlock the door."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(
+                    f"{self.base_url}/lock/set",
+                    params={"state": "1" if locked else "0"}
+                )
+                result = resp.json()
+                self._lock_state = "locked" if locked else "unlocked"
+                logger.info(f"Lock: {'LOCKED' if locked else 'UNLOCKED'}")
+                return result
+        except Exception as e:
+            logger.error(f"Set lock failed: {e}")
+            return {"error": str(e)}
+
+    async def toggle_lock(self) -> Dict:
+        """Toggle lock state."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(f"{self.base_url}/lock/toggle")
+                result = resp.json()
+                self._lock_state = result.get("lock", "unknown")
+                return result
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ================================================================
+    # Schedule Management
+    # ================================================================
+    async def get_schedules(self) -> List[Dict]:
+        """Get all active schedules."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{self.base_url}/schedules")
+                data = resp.json()
+                self._schedules = data.get("schedules", [])
+                return self._schedules
+        except Exception as e:
+            logger.error(f"Get schedules failed: {e}")
+            return []
+
+    async def add_schedule(self, relay: int, hour: int, minute: int,
+                           action: int = 1, days: int = 0x7F,
+                           repeat: int = 1) -> Dict:
+        """Add a new automation schedule."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(
+                    f"{self.base_url}/schedules/add",
+                    params={
+                        "relay": relay, "hour": hour, "minute": minute,
+                        "action": action, "days": days, "repeat": repeat
+                    }
+                )
+                return resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def delete_schedule(self, schedule_id: int) -> Dict:
+        """Delete a schedule."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.post(
+                    f"{self.base_url}/schedules/delete",
+                    params={"id": schedule_id}
+                )
+                return resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ================================================================
+    # Camera Integration
+    # ================================================================
+    async def get_camera_status(self) -> Dict:
+        """Get ESP32-CAM status."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{self.cam_url}/jarvis/status")
+                return resp.json()
+        except Exception as e:
+            logger.error(f"Camera status failed: {e}")
+            return {"error": str(e)}
+
+    async def camera_capture(self) -> Optional[bytes]:
+        """Capture a JPEG image from the camera."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{self.cam_url}/capture")
+                if resp.status_code == 200:
+                    return resp.content
+        except Exception as e:
+            logger.error(f"Camera capture failed: {e}")
+        return None
+
+    async def camera_detect(self) -> Dict:
+        """Trigger AI detection on camera."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{self.cam_url}/jarvis/detect")
+                return resp.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_stream_url(self) -> str:
+        """Get the MJPEG stream URL."""
+        return f"{self.cam_url}:81/stream"
+
+    # ================================================================
+    # Jarvis Heartbeat
+    # ================================================================
+    async def get_heartbeat(self) -> Dict:
+        """Get full device heartbeat from ESP32 server."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{self.base_url}/jarvis/heartbeat")
+                self._last_heartbeat = resp.json()
+                return self._last_heartbeat
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_cached_heartbeat(self) -> Dict:
+        return self._last_heartbeat
+
+    # ================================================================
     # Natural Language Command Processing
     # ================================================================
     async def process_command(self, command: str) -> str:
         """Process a natural language home command.
         
-        e.g., "turn on the living room lights"
-             "switch off all lights"
-             "what's the temperature"
+        Supports: relay control, room control, door/lock, schedules,
+                  camera, sensors, scenes, buzzer, and more.
         """
         command = command.lower().strip()
 
@@ -182,6 +348,64 @@ class HomeAutomationService:
         if any(w in command for w in ["all lights off", "turn off everything", "all off"]):
             await self.set_all_relays(False)
             return "All lights turned off."
+
+        # ---- Door ----
+        if any(w in command for w in ["door status", "is the door", "door open", "door closed"]):
+            data = await self.get_door_status()
+            door = data.get("door", "unknown")
+            lock = data.get("lock", "unknown")
+            return f"The door is {door}. The lock is {lock}."
+
+        # ---- Lock ----
+        if any(w in command for w in ["lock the door", "lock door", "lock up", "engage lock"]):
+            await self.set_lock(True)
+            return "Door locked."
+
+        if any(w in command for w in ["unlock the door", "unlock door", "unlock", "disengage lock"]):
+            await self.set_lock(False)
+            return "Door unlocked."
+
+        # ---- Camera ----
+        if any(w in command for w in ["take a photo", "capture image", "take picture", "snapshot"]):
+            result = await self.camera_detect()
+            if "error" not in result:
+                return f"Image captured and processed. AI result: {json.dumps(result)[:200]}"
+            return "Failed to capture image."
+
+        if any(w in command for w in ["camera status", "cam status"]):
+            status = await self.get_camera_status()
+            if "error" not in status:
+                streaming = status.get("streaming", False)
+                persons = status.get("persons", 0)
+                night = status.get("night_mode", False)
+                return f"Camera: {'streaming' if streaming else 'idle'}, {persons} person(s), night mode {'on' if night else 'off'}."
+            return "Camera unavailable."
+
+        if "stream" in command and "url" in command:
+            return f"Camera stream: {self.get_stream_url()}"
+
+        # ---- Schedule ----
+        if any(w in command for w in ["show schedules", "list schedules", "what schedules"]):
+            schedules = await self.get_schedules()
+            if schedules:
+                lines = []
+                for s in schedules:
+                    lines.append(f"  #{s.get('id', '?')}: Relay {s.get('relay', '?')} at {s.get('hour', 0):02d}:{s.get('minute', 0):02d}")
+                return "Active schedules:\n" + "\n".join(lines)
+            return "No schedules configured."
+
+        # ---- Heartbeat / System ----
+        if any(w in command for w in ["system status", "heartbeat", "device health"]):
+            hb = await self.get_heartbeat()
+            if "error" not in hb:
+                return (f"ESP32 Server: up {hb.get('uptime', 0)}s, "
+                        f"heap {hb.get('free_heap', 0)} bytes, "
+                        f"RSSI {hb.get('rssi', 0)} dBm, "
+                        f"door {hb.get('door', '?')}, "
+                        f"lock {hb.get('lock', '?')}, "
+                        f"temp {hb.get('temperature', '?')}°C, "
+                        f"{hb.get('schedules', 0)} schedules active.")
+            return "Could not reach ESP32 server."
 
         # ---- Room-specific ----
         for room in self._room_names:

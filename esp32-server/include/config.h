@@ -2,7 +2,11 @@
 #define CONFIG_H
 
 // ============================================
-// Vision-AI ESP32 Server Configuration
+// Vision-AI + Jarvis  ESP32 Server Configuration
+// ============================================
+// v3.0 — Enhanced with Jarvis AI integration,
+//         door sensor, IR blaster, servo lock,
+//         scheduled tasks, and heartbeat system.
 // ============================================
 
 // ---------- WiFi Configuration ----------
@@ -28,7 +32,7 @@
 #define MQTT_RECONNECT_DELAY 3000
 #define MQTT_MAX_PACKET     4096
 
-// MQTT Topics
+// MQTT Topics — legacy
 #define TOPIC_PREFIX        "vision-ai/"
 #define TOPIC_STATUS        TOPIC_PREFIX "server/status"
 #define TOPIC_SENSOR        TOPIC_PREFIX "server/sensors"
@@ -43,6 +47,22 @@
 #define TOPIC_OTA           TOPIC_PREFIX "system/ota"
 #define TOPIC_LOG           TOPIC_PREFIX "system/log"
 #define TOPIC_DEVICE_DISC   TOPIC_PREFIX "discovery"
+
+// MQTT Topics — Jarvis integration
+#define TOPIC_JARVIS_PREFIX TOPIC_PREFIX "jarvis/"
+#define TOPIC_JARVIS_CMD    TOPIC_JARVIS_PREFIX "command"
+#define TOPIC_JARVIS_STATE  TOPIC_JARVIS_PREFIX "state"
+#define TOPIC_JARVIS_EVENT  TOPIC_JARVIS_PREFIX "event"
+#define TOPIC_JARVIS_DOOR   TOPIC_JARVIS_PREFIX "door"
+#define TOPIC_JARVIS_MOTION TOPIC_JARVIS_PREFIX "motion"
+#define TOPIC_JARVIS_RELAY  TOPIC_JARVIS_PREFIX "relay"
+#define TOPIC_JARVIS_SENSOR TOPIC_JARVIS_PREFIX "sensor"
+#define TOPIC_JARVIS_ALERT  TOPIC_JARVIS_PREFIX "alert"
+#define TOPIC_JARVIS_LOCK   TOPIC_JARVIS_PREFIX "lock"
+#define TOPIC_JARVIS_IR     TOPIC_JARVIS_PREFIX "ir"
+#define TOPIC_JARVIS_SCHED  TOPIC_JARVIS_PREFIX "schedule"
+#define TOPIC_JARVIS_HEARTBEAT TOPIC_JARVIS_PREFIX "heartbeat"
+#define TOPIC_JARVIS_OTA    TOPIC_JARVIS_PREFIX "ota"
 
 // ---------- Web Server Configuration ----------
 #define HTTP_PORT           80
@@ -67,6 +87,21 @@
 #define PIN_STATUS_LED      23      // Status LED
 #define PIN_BUTTON          5       // Button
 
+// ---------- Door Sensor (magnetic reed switch) ----------
+#define PIN_DOOR_SENSOR     27      // GPIO27 — magnetic reed switch
+#define DOOR_DEBOUNCE_MS    200     // debounce time
+
+// ---------- Servo Lock ----------
+#define PIN_SERVO_LOCK      26      // GPIO26 — SG90 servo for door lock
+#define SERVO_LOCK_ANGLE    10      // locked position (degrees)
+#define SERVO_UNLOCK_ANGLE  90      // unlocked position (degrees)
+#define SERVO_CHANNEL       1
+#define SERVO_FREQ          50      // 50 Hz PWM for servo
+
+// ---------- IR Blaster (optional — controls AC/TV) ----------
+#define PIN_IR_LED          33      // IR LED transmitter
+#define IR_ENABLED          true
+
 // ---------- 8-Relay Pin Assignments ----------
 #define RELAY_COUNT         8
 const uint8_t RELAY_PINS[RELAY_COUNT] = {2, 15, 16, 17, 18, 19, 21, 22};
@@ -76,6 +111,9 @@ const char* const ROOM_NAMES[RELAY_COUNT] = {
     "Living Room", "Bedroom", "Kitchen", "Bathroom",
     "Garage", "Porch", "Study", "Spare"
 };
+
+// Relay active-low flag (set true if your relay module is active-LOW)
+#define RELAY_ACTIVE_LOW    true
 
 // ---------- Voltage/Current Sensor ----------
 #define PIN_VOLTAGE_SENSOR  34      // Voltage divider ADC input
@@ -88,12 +126,21 @@ const char* const ROOM_NAMES[RELAY_COUNT] = {
 #define ADC_RESOLUTION      4095.0  // 12-bit ADC
 
 // ---------- EEPROM Configuration ----------
-#define EEPROM_SIZE         512
+#define EEPROM_SIZE         1024
 #define EEPROM_USERNAME_ADDR    0   // 32 bytes for username
 #define EEPROM_PASSWORD_ADDR    32  // 32 bytes for password
 #define EEPROM_RELAY_ADDR       64  // 8 bytes for relay states (1 byte per relay)
 #define EEPROM_BIRTHDAY_ADDR    96  // 32 bytes for birthday
-#define EEPROM_SCENE_ADDR       128 // Scene data
+#define EEPROM_SCENE_ADDR       128 // Scene data (5 scenes × 8 bytes = 40 bytes)
+#define EEPROM_SCHEDULE_ADDR    256 // Schedule data (16 schedules × 16 bytes = 256 bytes)
+#define EEPROM_LOCK_STATE_ADDR  520 // 1 byte — lock state
+#define EEPROM_BOOT_COUNT_ADDR  524 // 4 bytes — boot counter
+
+// ---------- Schedule System ----------
+#define MAX_SCHEDULES       16
+// Schedule entry packed as:  relay(1B) | hour(1B) | minute(1B) | days_bitmask(1B) |
+//                            action(1B) | enabled(1B) | repeat(1B) | pad(1B)  = 8 bytes
+// + scene schedules at offset +128
 
 // ---------- Sensor Configuration ----------
 #define DHT_TYPE            DHT11
@@ -102,19 +149,28 @@ const char* const ROOM_NAMES[RELAY_COUNT] = {
 #define ULTRASONIC_TIMEOUT  30000   // 30ms timeout
 #define LDR_THRESHOLD       500     // Light threshold
 
+// Sensor Alert Thresholds
+#define TEMP_ALERT_HIGH     40.0    // °C
+#define TEMP_ALERT_LOW      5.0     // °C
+#define HUMIDITY_ALERT_HIGH 85.0    // %
+#define VOLTAGE_ALERT_HIGH  260.0   // V
+#define VOLTAGE_ALERT_LOW   180.0   // V
+#define CURRENT_ALERT_HIGH  15.0    // A
+
 // ---------- OTA Firmware Limits ----------
 #define MAX_FIRMWARE_SIZE   1572864 // 1.5MB max firmware size for OTA
 
 // ---------- System Configuration ----------
 #define DEVICE_NAME         "VisionAI-Server"
-#define FIRMWARE_VERSION    "2.5.0"
-#define HARDWARE_VERSION    "1.0"
+#define FIRMWARE_VERSION    "3.0.0"
+#define HARDWARE_VERSION    "2.0"
 #define SERIAL_BAUD         115200
 #define JSON_BUFFER_SIZE    2048
 #define LOG_LEVEL           3       // 0=None, 1=Error, 2=Warn, 3=Info, 4=Debug
 #define WATCHDOG_TIMEOUT    30      // seconds
 #define HEALTH_CHECK_INTERVAL 10000 // 10 seconds
 #define MAX_LOG_ENTRIES     100
+#define HEARTBEAT_INTERVAL  15000   // 15 s — send heartbeat to Jarvis
 
 // ---------- Power Management ----------
 #define DEEP_SLEEP_TIME     300     // 5 minutes (seconds)
@@ -145,5 +201,11 @@ const char* const ROOM_NAMES[RELAY_COUNT] = {
 #define AUTH_PASSWORD       "vision2024"
 #define API_KEY             "vai_sk_2024_abcdef1234567890"
 #define CORS_ORIGIN         "*"
+
+// ---------- Jarvis AI Integration ----------
+#define JARVIS_API_URL      "http://192.168.1.100:8100"
+#define JARVIS_ENABLED      true
+// When door opens ➜ publish TOPIC_JARVIS_DOOR ➜ Jarvis wakes camera
+// When PIR fires  ➜ publish TOPIC_JARVIS_MOTION ➜ Jarvis starts face recog
 
 #endif // CONFIG_H

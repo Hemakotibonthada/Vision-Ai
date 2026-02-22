@@ -1,9 +1,10 @@
 /*
  * =============================================================
- * Vision-AI ESP32-CAM Module - Camera & Streaming Controller
+ * Vision-AI ESP32-CAM Module v3.0 - Jarvis Vision Controller
  * =============================================================
  * Features: Camera capture, MJPEG streaming, Motion detection,
- *           Face detection, Flash control, MQTT, HTTP upload
+ *           Face detection, Intruder alert, Patrol mode,
+ *           Night vision, Jarvis AI integration, MQTT, HTTP
  * =============================================================
  */
 
@@ -11,6 +12,7 @@
 #include <WiFi.h>
 #include <esp_camera.h>
 #include <esp_http_server.h>
+#include <esp_task_wdt.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -21,6 +23,7 @@
 // Global Declarations
 // ============================================
 WiFiClient wifiClient;
+WiFiClient wifiClient2;  // Second client for HTTP uploads
 PubSubClient mqtt(wifiClient);
 
 httpd_handle_t stream_httpd = NULL;
@@ -45,10 +48,28 @@ size_t prevFrameSize = 0;
 int motionEventCount = 0;
 
 // Face detection
-#include "esp_face_detect.h"
-// For on-device face detection
 bool facesDetected = false;
 int faceCount = 0;
+
+// Jarvis integration state
+bool jarvisPatrolMode = false;
+bool jarvisIntruderMode = INTRUDER_DETECT_ENABLED;
+bool jarvisNightMode = false;
+unsigned long lastPersonPublish = 0;
+unsigned long lastPatrolCapture = 0;
+unsigned long lastHeartbeat = 0;
+int personCount = 0;
+int consecutiveMotionFrames = 0;
+bool intruderAlertActive = false;
+unsigned long intruderDetectTime = 0;
+String lastAIResult = "";
+int totalCaptures = 0;
+int totalUploads = 0;
+int aiDetectionCount = 0;
+
+// Night vision
+bool nightModeActive = false;
+int ambientLight = 255; // Estimated from frame brightness
 
 // ============================================
 // Camera Initialization (Feature 56)
@@ -160,6 +181,175 @@ void autoFlashControl(int lightLevel) {
     } else if (autoFlash) {
         flashOff();
     }
+}
+
+// ============================================
+// Night Vision Auto-Detect
+// ============================================
+int estimateAmbientLight(camera_fb_t* fb) {
+    if (!fb || fb->len < 100) return 128;
+    // Sample brightness from JPEG data (rough estimate)
+    long total = 0;
+    int samples = min((size_t)500, fb->len / 4);
+    for (int i = 0; i < samples; i++) {
+        total += fb->buf[i * 4];
+    }
+    return total / samples;
+}
+
+void handleNightMode(camera_fb_t* fb) {
+    if (!NIGHT_MODE_AUTO) return;
+    ambientLight = estimateAmbientLight(fb);
+    bool shouldBeNight = (ambientLight < LIGHT_THRESHOLD_LOW);
+    
+    if (shouldBeNight != nightModeActive) {
+        nightModeActive = shouldBeNight;
+        sensor_t* s = esp_camera_sensor_get();
+        if (s) {
+            if (nightModeActive) {
+                // Night mode: increase gain, lower quality for speed
+                s->set_agc_gain(s, 30);
+                s->set_gainceiling(s, (gainceiling_t)6);
+                s->set_aec_value(s, 600);
+                Serial.println("[Night] Night vision mode ACTIVATED");
+            } else {
+                s->set_agc_gain(s, 0);
+                s->set_gainceiling(s, (gainceiling_t)2);
+                s->set_aec_value(s, 300);
+                Serial.println("[Night] Day mode restored");
+            }
+        }
+        // Notify Jarvis
+        StaticJsonDocument<128> doc;
+        doc["event"] = "night_mode";
+        doc["active"] = nightModeActive;
+        doc["ambient"] = ambientLight;
+        char buf[128];
+        serializeJson(doc, buf);
+        mqtt.publish(TOPIC_JARVIS_CAM_EVENT, buf);
+    }
+}
+
+// ============================================
+// Jarvis Heartbeat
+// ============================================
+void sendCamHeartbeat() {
+    StaticJsonDocument<512> doc;
+    doc["device"]     = MQTT_CLIENT_ID;
+    doc["type"]       = "camera";
+    doc["firmware"]   = FIRMWARE_VERSION;
+    doc["uptime"]     = millis() / 1000;
+    doc["free_heap"]  = ESP.getFreeHeap();
+    doc["free_psram"] = ESP.getFreePsram();
+    doc["rssi"]       = WiFi.RSSI();
+    doc["ip"]         = WiFi.localIP().toString();
+    doc["streaming"]  = streamActive;
+    doc["fps"]        = currentFPS;
+    doc["motion"]     = motionDetectEnabled;
+    doc["night_mode"] = nightModeActive;
+    doc["ambient"]    = ambientLight;
+    doc["patrol"]     = jarvisPatrolMode;
+    doc["intruder_mode"] = jarvisIntruderMode;
+    doc["motion_events"] = motionEventCount;
+    doc["persons"]    = personCount;
+    doc["captures"]   = totalCaptures;
+    doc["uploads"]    = totalUploads;
+    doc["detections"] = aiDetectionCount;
+    doc["flash"]      = flashIntensity;
+    doc["stream_url"] = "http://" + WiFi.localIP().toString() + ":81/stream";
+    
+    char buf[512];
+    serializeJson(doc, buf);
+    mqtt.publish(TOPIC_JARVIS_CAM_HEARTBEAT, buf);
+}
+
+// ============================================
+// Intruder Alert System
+// ============================================
+void triggerIntruderAlert(camera_fb_t* fb, const String& reason) {
+    if (intruderAlertActive) return; // Already alerting
+    intruderAlertActive = true;
+    intruderDetectTime = millis();
+    
+    Serial.println("[INTRUDER] *** ALERT TRIGGERED: " + reason + " ***");
+    
+    // Flash strobe as visual deterrent
+    for (int i = 0; i < 5; i++) {
+        flashOn(); delay(100); flashOff(); delay(100);
+    }
+    
+    // Publish intruder alert
+    StaticJsonDocument<256> doc;
+    doc["event"]     = "intruder_alert";
+    doc["reason"]    = reason;
+    doc["camera"]    = MQTT_CLIENT_ID;
+    doc["timestamp"] = millis();
+    doc["night"]     = nightModeActive;
+    
+    char buf[256];
+    serializeJson(doc, buf);
+    mqtt.publish(TOPIC_JARVIS_INTRUDER, buf, true);
+    mqtt.publish(TOPIC_JARVIS_CAM_ALERT, buf);
+    
+    // Capture evidence frames
+    for (int i = 0; i < INTRUDER_CAPTURE_COUNT; i++) {
+        if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+        delay(200);
+        camera_fb_t* evidence = esp_camera_fb_get();
+        if (evidence) {
+            uploadImageToAI(evidence, "intruder_evidence");
+            esp_camera_fb_return(evidence);
+        }
+        flashOff();
+        delay(300);
+    }
+    
+    // Reset after delay
+    intruderAlertActive = false;
+}
+
+// ============================================
+// Patrol Mode
+// ============================================
+void handlePatrol() {
+    if (!jarvisPatrolMode) return;
+    
+    unsigned long now = millis();
+    if (now - lastPatrolCapture < PATROL_INTERVAL_MS) return;
+    lastPatrolCapture = now;
+    
+    Serial.println("[Patrol] Periodic capture");
+    
+    // Night flash if needed
+    if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+    delay(100);
+    
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (fb) {
+        totalCaptures++;
+        if (PATROL_UPLOAD) {
+            uploadImageToAI(fb, "patrol");
+        }
+        
+        // Check motion
+        bool motion = detectMotion(fb);
+        
+        StaticJsonDocument<256> doc;
+        doc["event"]     = "patrol_capture";
+        doc["motion"]    = motion;
+        doc["size"]      = fb->len;
+        doc["night"]     = nightModeActive;
+        doc["ambient"]   = ambientLight;
+        doc["timestamp"] = millis();
+        
+        char buf[256];
+        serializeJson(doc, buf);
+        mqtt.publish(TOPIC_JARVIS_PATROL, buf);
+        
+        esp_camera_fb_return(fb);
+    }
+    
+    flashOff();
 }
 
 // ============================================
@@ -339,19 +529,33 @@ bool detectMotion(camera_fb_t* fb) {
     if (motionDetected) {
         lastMotionTime = now;
         motionEventCount++;
-        Serial.printf("[Motion] Detected! Changed: %d (%.1f%%)\n", changedPixels * sampleStep, motionPercent);
+        consecutiveMotionFrames++;
+        Serial.printf("[Motion] Detected! Changed: %d (%.1f%%) [consecutive: %d]\n", 
+                      changedPixels * sampleStep, motionPercent, consecutiveMotionFrames);
         
-        // Publish motion event
+        // Publish motion event to standard topic
         StaticJsonDocument<256> doc;
         doc["event"] = "motion";
         doc["changed_pixels"] = changedPixels * sampleStep;
         doc["motion_percent"] = motionPercent;
         doc["timestamp"] = millis();
         doc["camera"] = MQTT_CLIENT_ID;
+        doc["night"] = nightModeActive;
+        doc["consecutive"] = consecutiveMotionFrames;
         
         char buffer[256];
         serializeJson(doc, buffer);
         mqtt.publish(TOPIC_CAM_MOTION, buffer);
+        
+        // Also publish to Jarvis motion topic
+        mqtt.publish(TOPIC_JARVIS_CAM_EVENT, buffer);
+        
+        // Intruder mode: sustained motion triggers alert
+        if (jarvisIntruderMode && consecutiveMotionFrames >= 3) {
+            triggerIntruderAlert(fb, "Sustained motion detected (" + String(consecutiveMotionFrames) + " frames)");
+        }
+    } else {
+        consecutiveMotionFrames = 0;
     }
     
     return motionDetected;
@@ -507,48 +711,109 @@ void startStreamServer() {
 void startCaptureServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 12;
     
     if (httpd_start(&capture_httpd, &config) == ESP_OK) {
         httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = captureHandler, .user_ctx = NULL };
         httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = statusHandler, .user_ctx = NULL };
         httpd_uri_t settings_uri = { .uri = "/settings", .method = HTTP_POST, .handler = settingsHandler, .user_ctx = NULL };
+        httpd_uri_t jarvis_status_uri = { .uri = "/jarvis/status", .method = HTTP_GET, .handler = jarvisStatusHandler, .user_ctx = NULL };
+        httpd_uri_t jarvis_detect_uri = { .uri = "/jarvis/detect", .method = HTTP_GET, .handler = jarvisCaptureDetectHandler, .user_ctx = NULL };
         
         httpd_register_uri_handler(capture_httpd, &capture_uri);
         httpd_register_uri_handler(capture_httpd, &status_uri);
         httpd_register_uri_handler(capture_httpd, &settings_uri);
+        httpd_register_uri_handler(capture_httpd, &jarvis_status_uri);
+        httpd_register_uri_handler(capture_httpd, &jarvis_detect_uri);
         Serial.println("[HTTP] Capture server started on port 80");
     }
 }
 
 // ============================================
-// Upload Image to AI Server (Feature 109)
+// Upload Image to AI Server (Jarvis-Enhanced)
 // ============================================
-bool uploadImageToAI(camera_fb_t* fb) {
+bool uploadImageToAI(camera_fb_t* fb, const char* context = "general") {
     if (!fb) return false;
     
     HTTPClient http;
     String url = String(AI_SERVER_URL) + AI_INFERENCE_PATH;
     
     http.begin(url);
+    http.setTimeout(AI_TIMEOUT_MS);
     http.addHeader("Content-Type", "image/jpeg");
     http.addHeader("X-Device-ID", MQTT_CLIENT_ID);
     http.addHeader("X-Timestamp", String(millis()));
+    http.addHeader("X-Context", context);
+    http.addHeader("X-Night-Mode", String(nightModeActive ? "true" : "false"));
     
     int httpCode = http.POST(fb->buf, fb->len);
     
     if (httpCode == 200) {
         String response = http.getString();
-        Serial.printf("[AI] Response: %s\n", response.c_str());
+        lastAIResult = response;
+        totalUploads++;
+        Serial.printf("[AI] Response (%s): %s\n", context, response.c_str());
         
-        // Forward results via MQTT
+        // Parse AI response for person detection
+        StaticJsonDocument<1024> aiDoc;
+        if (!deserializeJson(aiDoc, response)) {
+            if (aiDoc.containsKey("detections")) {
+                JsonArray detections = aiDoc["detections"].as<JsonArray>();
+                int persons = 0;
+                for (JsonObject det : detections) {
+                    String label = det["label"].as<String>();
+                    if (label == "person") persons++;
+                }
+                if (persons != personCount) {
+                    personCount = persons;
+                    // Publish person count change to Jarvis
+                    StaticJsonDocument<256> pDoc;
+                    pDoc["event"]   = "person_count";
+                    pDoc["count"]   = personCount;
+                    pDoc["context"] = context;
+                    pDoc["camera"]  = MQTT_CLIENT_ID;
+                    pDoc["night"]   = nightModeActive;
+                    char pBuf[256];
+                    serializeJson(pDoc, pBuf);
+                    mqtt.publish(TOPIC_JARVIS_CAM_PERSON, pBuf);
+                    
+                    // Intruder check
+                    if (jarvisIntruderMode && personCount > 0 && strcmp(context, "intruder_evidence") != 0) {
+                        triggerIntruderAlert(fb, "AI detected " + String(persons) + " person(s)");
+                    }
+                }
+                aiDetectionCount++;
+            }
+            
+            // Forward face identification results
+            if (aiDoc.containsKey("faces")) {
+                JsonArray faces = aiDoc["faces"].as<JsonArray>();
+                if (faces.size() > 0) {
+                    StaticJsonDocument<512> fDoc;
+                    fDoc["event"]  = "face_detected";
+                    fDoc["count"]  = faces.size();
+                    fDoc["camera"] = MQTT_CLIENT_ID;
+                    JsonArray fArr = fDoc.createNestedArray("faces");
+                    for (JsonObject face : faces) {
+                        JsonObject f = fArr.createNestedObject();
+                        f["name"]       = face["name"] | "unknown";
+                        f["confidence"] = face["confidence"] | 0.0;
+                    }
+                    char fBuf[512];
+                    serializeJson(fDoc, fBuf);
+                    mqtt.publish(TOPIC_JARVIS_FACE_ID, fBuf);
+                }
+            }
+        }
+        
+        // Forward full results via MQTT
         mqtt.publish(TOPIC_AI_INFERENCE, response.c_str());
         
         http.end();
         return true;
     }
     
-    Serial.printf("[AI] Upload failed: %d\n", httpCode);
+    Serial.printf("[AI] Upload failed (%s): %d\n", context, httpCode);
     http.end();
     return false;
 }
@@ -618,7 +883,7 @@ void handleTimelapse() {
 }
 
 // ============================================
-// MQTT Callback
+// MQTT Callback (Jarvis-Enhanced)
 // ============================================
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     char message[length + 1];
@@ -627,20 +892,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     
     Serial.printf("[MQTT] %s: %s\n", topic, message);
     
-    if (String(topic) == TOPIC_CAM_COMMAND) {
-        StaticJsonDocument<512> doc;
-        DeserializationError error = deserializeJson(doc, message);
-        if (error) return;
-        
-        const char* cmd = doc["command"];
-        if (!cmd) return;
+    String topicStr = String(topic);
+    
+    // Parse JSON command
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, message);
+    if (error) return;
+    
+    const char* cmd = doc["command"];
+    if (!cmd) return;
+    
+    // ---- Standard camera commands ----
+    if (topicStr == TOPIC_CAM_COMMAND || topicStr == TOPIC_JARVIS_CAM_CMD) {
         
         if (strcmp(cmd, "capture") == 0) {
+            if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+            delay(100);
             camera_fb_t* fb = esp_camera_fb_get();
             if (fb) {
-                uploadImageToAI(fb);
+                totalCaptures++;
+                const char* ctx = doc["context"] | "capture";
+                uploadImageToAI(fb, ctx);
                 esp_camera_fb_return(fb);
             }
+            flashOff();
         }
         else if (strcmp(cmd, "burst") == 0) {
             burstCapture();
@@ -677,12 +952,78 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             initCamera();
         }
         else if (strcmp(cmd, "detect") == 0) {
-            // Capture and send to AI
             camera_fb_t* fb = esp_camera_fb_get();
             if (fb) {
-                uploadImageToAI(fb);
+                totalCaptures++;
+                uploadImageToAI(fb, "detect");
                 esp_camera_fb_return(fb);
             }
+        }
+        // ---- Jarvis-specific commands ----
+        else if (strcmp(cmd, "patrol_start") == 0) {
+            jarvisPatrolMode = true;
+            lastPatrolCapture = 0;
+            Serial.println("[Jarvis] Patrol mode STARTED");
+            StaticJsonDocument<128> ack;
+            ack["event"] = "patrol_started";
+            ack["camera"] = MQTT_CLIENT_ID;
+            char buf[128];
+            serializeJson(ack, buf);
+            mqtt.publish(TOPIC_JARVIS_CAM_EVENT, buf);
+        }
+        else if (strcmp(cmd, "patrol_stop") == 0) {
+            jarvisPatrolMode = false;
+            Serial.println("[Jarvis] Patrol mode STOPPED");
+            StaticJsonDocument<128> ack;
+            ack["event"] = "patrol_stopped";
+            ack["camera"] = MQTT_CLIENT_ID;
+            char buf[128];
+            serializeJson(ack, buf);
+            mqtt.publish(TOPIC_JARVIS_CAM_EVENT, buf);
+        }
+        else if (strcmp(cmd, "intruder_mode") == 0) {
+            jarvisIntruderMode = doc["enabled"] | true;
+            Serial.printf("[Jarvis] Intruder mode: %s\n", jarvisIntruderMode ? "ON" : "OFF");
+        }
+        else if (strcmp(cmd, "night_flash") == 0) {
+            int level = doc["level"] | NIGHT_FLASH_LEVEL;
+            setFlash(level);
+            delay(doc["duration"] | 1000);
+            flashOff();
+        }
+        else if (strcmp(cmd, "identify") == 0) {
+            // Capture and send for face identification
+            if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+            delay(200);
+            camera_fb_t* fb = esp_camera_fb_get();
+            if (fb) {
+                totalCaptures++;
+                uploadImageToAI(fb, "face_identify");
+                esp_camera_fb_return(fb);
+            }
+            flashOff();
+        }
+        else if (strcmp(cmd, "snapshot_hd") == 0) {
+            // Temporarily switch to HD for a single capture
+            sensor_t* s = esp_camera_sensor_get();
+            framesize_t prevSize = (framesize_t)s->status.framesize;
+            s->set_framesize(s, FRAMESIZE_SXGA);
+            delay(300);
+            camera_fb_t* fb = esp_camera_fb_get();
+            if (fb) {
+                totalCaptures++;
+                uploadImageToAI(fb, "hd_snapshot");
+                esp_camera_fb_return(fb);
+            }
+            s->set_framesize(s, prevSize);
+        }
+        else if (strcmp(cmd, "resolution") == 0) {
+            sensor_t* s = esp_camera_sensor_get();
+            int res = doc["value"] | 8; // Default VGA
+            s->set_framesize(s, (framesize_t)res);
+        }
+        else if (strcmp(cmd, "heartbeat") == 0) {
+            sendCamHeartbeat();
         }
     }
 }
@@ -700,20 +1041,28 @@ bool connectMQTT() {
         Serial.println("[MQTT] Connected!");
         
         mqtt.subscribe(TOPIC_CAM_COMMAND);
+        mqtt.subscribe(TOPIC_JARVIS_CAM_CMD);
         
-        // Publish online status
-        StaticJsonDocument<256> doc;
-        doc["status"] = "online";
-        doc["camera"] = MQTT_CLIENT_ID;
-        doc["firmware"] = FIRMWARE_VERSION;
-        doc["ip"] = WiFi.localIP().toString();
-        doc["stream_url"] = "http://" + WiFi.localIP().toString() + ":81/stream";
+        // Publish online status with Jarvis info
+        StaticJsonDocument<512> doc;
+        doc["status"]      = "online";
+        doc["camera"]      = MQTT_CLIENT_ID;
+        doc["firmware"]    = FIRMWARE_VERSION;
+        doc["ip"]          = WiFi.localIP().toString();
+        doc["stream_url"]  = "http://" + WiFi.localIP().toString() + ":81/stream";
         doc["capture_url"] = "http://" + WiFi.localIP().toString() + "/capture";
-        doc["psram"] = psramFound();
+        doc["psram"]       = psramFound();
+        doc["jarvis"]      = true;
+        doc["patrol"]      = jarvisPatrolMode;
+        doc["intruder"]    = jarvisIntruderMode;
+        doc["night_mode"]  = nightModeActive;
         
-        char buffer[256];
+        char buffer[512];
         serializeJson(doc, buffer);
         mqtt.publish(TOPIC_CAM_STATUS, buffer, true);
+        
+        // Initial heartbeat
+        sendCamHeartbeat();
         
         return true;
     }
@@ -731,7 +1080,7 @@ void handleMQTTReconnect() {
 }
 
 // ============================================
-// Periodic Status Publish
+// Periodic Status Publish (Jarvis-Enhanced)
 // ============================================
 void publishStatus() {
     static unsigned long lastPublish = 0;
@@ -739,24 +1088,91 @@ void publishStatus() {
     lastPublish = millis();
     
     StaticJsonDocument<512> doc;
-    doc["camera"] = MQTT_CLIENT_ID;
-    doc["status"] = "online";
-    doc["fps"] = currentFPS;
-    doc["streaming"] = streamActive;
+    doc["camera"]        = MQTT_CLIENT_ID;
+    doc["status"]        = "online";
+    doc["fps"]           = currentFPS;
+    doc["streaming"]     = streamActive;
     doc["motion_detect"] = motionDetectEnabled;
-    doc["face_detect"] = faceDetectEnabled;
-    doc["timelapse"] = timelapseActive;
-    doc["flash"] = flashIntensity;
+    doc["face_detect"]   = faceDetectEnabled;
+    doc["timelapse"]     = timelapseActive;
+    doc["flash"]         = flashIntensity;
     doc["motion_events"] = motionEventCount;
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["free_psram"] = ESP.getFreePsram();
-    doc["uptime"] = millis() / 1000;
-    doc["rssi"] = WiFi.RSSI();
-    doc["ip"] = WiFi.localIP().toString();
+    doc["free_heap"]     = ESP.getFreeHeap();
+    doc["free_psram"]    = ESP.getFreePsram();
+    doc["uptime"]        = millis() / 1000;
+    doc["rssi"]          = WiFi.RSSI();
+    doc["ip"]            = WiFi.localIP().toString();
+    doc["patrol"]        = jarvisPatrolMode;
+    doc["intruder_mode"] = jarvisIntruderMode;
+    doc["night_mode"]    = nightModeActive;
+    doc["ambient"]       = ambientLight;
+    doc["persons"]       = personCount;
+    doc["captures"]      = totalCaptures;
+    doc["uploads"]       = totalUploads;
     
     char buffer[512];
     serializeJson(doc, buffer);
     mqtt.publish(TOPIC_CAM_STATUS, buffer);
+}
+
+// ============================================
+// Jarvis Endpoints for HTTP Server
+// ============================================
+esp_err_t jarvisStatusHandler(httpd_req_t* req) {
+    StaticJsonDocument<512> doc;
+    doc["device"]        = MQTT_CLIENT_ID;
+    doc["firmware"]      = FIRMWARE_VERSION;
+    doc["uptime"]        = millis() / 1000;
+    doc["free_heap"]     = ESP.getFreeHeap();
+    doc["free_psram"]    = ESP.getFreePsram();
+    doc["rssi"]          = WiFi.RSSI();
+    doc["ip"]            = WiFi.localIP().toString();
+    doc["streaming"]     = streamActive;
+    doc["fps"]           = currentFPS;
+    doc["motion"]        = motionDetectEnabled;
+    doc["night_mode"]    = nightModeActive;
+    doc["ambient"]       = ambientLight;
+    doc["patrol"]        = jarvisPatrolMode;
+    doc["intruder_mode"] = jarvisIntruderMode;
+    doc["persons"]       = personCount;
+    doc["motion_events"] = motionEventCount;
+    doc["captures"]      = totalCaptures;
+    doc["detections"]    = aiDetectionCount;
+    doc["last_ai"]       = lastAIResult.substring(0, 200);
+    
+    char buf[512];
+    serializeJson(doc, buf);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, buf, strlen(buf));
+}
+
+esp_err_t jarvisCaptureDetectHandler(httpd_req_t* req) {
+    // Single-shot: capture + upload to AI + return results
+    if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+    delay(200);
+    
+    camera_fb_t* fb = esp_camera_fb_get();
+    flashOff();
+    
+    if (!fb) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    
+    totalCaptures++;
+    uploadImageToAI(fb, "jarvis_detect");
+    
+    esp_camera_fb_return(fb);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    
+    if (lastAIResult.length() > 0) {
+        return httpd_resp_send(req, lastAIResult.c_str(), lastAIResult.length());
+    }
+    return httpd_resp_sendstr(req, "{\"status\":\"captured\",\"ai\":\"pending\"}");
 }
 
 // ============================================
@@ -770,7 +1186,7 @@ void setup() {
     Serial.println("╔══════════════════════════════════════╗");
     Serial.println("║   Vision-AI ESP32-CAM v" FIRMWARE_VERSION "        ║");
     Serial.println("╠══════════════════════════════════════╣");
-    Serial.println("║  Camera & Vision Processing Module   ║");
+    Serial.println("║  Jarvis Vision Processing Module     ║");
     Serial.println("╚══════════════════════════════════════╝");
     Serial.println();
     
@@ -812,13 +1228,19 @@ void setup() {
     mqtt.setServer(MQTT_BROKER, MQTT_PORT);
     mqtt.setCallback(mqttCallback);
     mqtt.setKeepAlive(MQTT_KEEPALIVE);
-    mqtt.setBufferSize(4096);
+    mqtt.setBufferSize(MQTT_BUFFER_SIZE);
     connectMQTT();
     
-    Serial.println("\n[Setup] ✓ Camera module ready!");
+    // Watchdog
+    esp_task_wdt_init(WDT_TIMEOUT, true);
+    esp_task_wdt_add(NULL);
+    
+    Serial.println("\n[Setup] ✓ Jarvis Camera module ready!");
     Serial.printf("[URLs] Stream:  http://%s:%d/stream\n", WiFi.localIP().toString().c_str(), STREAM_PORT);
     Serial.printf("[URLs] Capture: http://%s/capture\n", WiFi.localIP().toString().c_str());
     Serial.printf("[URLs] Status:  http://%s/status\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[URLs] Jarvis:  http://%s/jarvis/status\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[URLs] Detect:  http://%s/jarvis/detect\n", WiFi.localIP().toString().c_str());
     Serial.println();
     
     // Indicate ready
@@ -827,9 +1249,12 @@ void setup() {
 }
 
 // ============================================
-// Main Loop
+// Main Loop (Jarvis-Enhanced)
 // ============================================
 void loop() {
+    // Reset watchdog
+    esp_task_wdt_reset();
+    
     // Handle MQTT
     mqtt.loop();
     handleMQTTReconnect();
@@ -840,6 +1265,25 @@ void loop() {
     // Handle timelapse
     handleTimelapse();
     
+    // Handle patrol mode
+    handlePatrol();
+    
+    // Periodic heartbeat to Jarvis
+    if (millis() - lastHeartbeat >= CAM_HEARTBEAT_INTERVAL) {
+        lastHeartbeat = millis();
+        sendCamHeartbeat();
+    }
+    
+    // WiFi reconnect
+    if (WiFi.status() != WL_CONNECTED) {
+        static unsigned long lastWifiRetry = 0;
+        if (millis() - lastWifiRetry > WIFI_RECONNECT_INTERVAL) {
+            lastWifiRetry = millis();
+            Serial.println("[WiFi] Reconnecting...");
+            WiFi.reconnect();
+        }
+    }
+    
     // Periodic motion check (when not streaming)
     if (!streamActive && motionDetectEnabled) {
         static unsigned long lastCheck = 0;
@@ -847,13 +1291,33 @@ void loop() {
             lastCheck = millis();
             camera_fb_t* fb = esp_camera_fb_get();
             if (fb) {
+                // Night vision auto-detect
+                handleNightMode(fb);
+                
                 bool motion = detectMotion(fb);
-                if (motion) {
+                if (motion && MOTION_AUTO_CAPTURE) {
                     // Auto-capture on motion and send to AI
-                    uploadImageToAI(fb);
+                    totalCaptures++;
+                    if (nightModeActive) setFlash(NIGHT_FLASH_LEVEL);
+                    uploadImageToAI(fb, "motion_trigger");
+                    flashOff();
                 }
                 esp_camera_fb_return(fb);
             }
+        }
+    }
+    
+    // Periodic person count publish
+    if (millis() - lastPersonPublish >= PERSON_COUNT_PUBLISH_MS) {
+        lastPersonPublish = millis();
+        if (personCount > 0) {
+            StaticJsonDocument<128> doc;
+            doc["persons"] = personCount;
+            doc["camera"]  = MQTT_CLIENT_ID;
+            doc["night"]   = nightModeActive;
+            char buf[128];
+            serializeJson(doc, buf);
+            mqtt.publish(TOPIC_JARVIS_CAM_PERSON, buf);
         }
     }
     

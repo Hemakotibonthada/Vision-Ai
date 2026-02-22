@@ -63,8 +63,20 @@ class JarvisSettings(BaseSettings):
     # ---- ESP32 Integration ----
     ESP32_SERVER_URL: str = "http://192.168.1.100"
     ESP32_API_PREFIX: str = "/api/v1"
-    MQTT_BROKER: str = "localhost"
+    ESP32_CAM_URL: str = "http://192.168.1.102"
+    ESP32_CAM_STREAM_PORT: int = 81
+    MQTT_BROKER: str = "127.0.0.1"
     MQTT_PORT: int = 1883
+    MQTT_USERNAME: str = ""
+    MQTT_PASSWORD: str = ""
+    MQTT_CLIENT_ID: str = "jarvis-bridge"
+
+    # ---- MQTT Topics ----
+    MQTT_TOPIC_PREFIX: str = "vision-ai/"
+    MQTT_JARVIS_CMD: str = "vision-ai/jarvis/cmd"
+    MQTT_JARVIS_STATE: str = "vision-ai/jarvis/state"
+    MQTT_JARVIS_EVENT: str = "vision-ai/jarvis/event"
+    MQTT_CAM_CMD: str = "vision-ai/jarvis/camera/cmd"
 
     # ---- Security ----
     MAX_INTRUDER_PHOTOS: int = 100

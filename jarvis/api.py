@@ -25,6 +25,22 @@ from jarvis.services.home_automation_service import home_service
 from jarvis.services.vision_integration_service import vision_service
 from jarvis.services.learning_service import learning_service
 from jarvis.services.command_processor import command_processor
+from jarvis.services.mqtt_bridge_service import MQTTBridgeService
+from jarvis.services.esp32_manager_service import ESP32ManagerService
+
+# Initialize MQTT bridge and ESP32 manager
+mqtt_bridge = MQTTBridgeService(
+    broker=settings.MQTT_BROKER,
+    port=settings.MQTT_PORT,
+    username=settings.MQTT_USERNAME,
+    password=settings.MQTT_PASSWORD,
+    client_id=settings.MQTT_CLIENT_ID,
+)
+esp32_manager = ESP32ManagerService(mqtt_bridge=mqtt_bridge)
+
+# Link services
+home_service.set_mqtt_bridge(mqtt_bridge)
+home_service.set_esp32_manager(esp32_manager)
 
 
 # ================================================================
@@ -98,12 +114,36 @@ async def startup():
 
     jarvis_brain.on_state_change(on_state_change)
 
+    # Start MQTT bridge
+    mqtt_bridge.connect()
+
+    # Register MQTT event handlers for Jarvis brain
+    mqtt_bridge.register_handler("intruder", lambda data: asyncio.create_task(
+        jarvis_brain._transition(JarvisState.INTRUDER_ALERT, f"MQTT intruder: {data.get('reason', 'unknown')}")
+    ))
+    mqtt_bridge.register_handler("door", lambda data: asyncio.create_task(
+        ws_manager.broadcast({"type": "door_event", "data": data})
+    ))
+    mqtt_bridge.register_handler("motion", lambda data: asyncio.create_task(
+        ws_manager.broadcast({"type": "motion_event", "data": data})
+    ))
+    mqtt_bridge.register_handler("person_detected", lambda data: asyncio.create_task(
+        ws_manager.broadcast({"type": "person_detected", "data": data})
+    ))
+    mqtt_bridge.register_handler("face_identified", lambda data: asyncio.create_task(
+        ws_manager.broadcast({"type": "face_identified", "data": data})
+    ))
+    mqtt_bridge.register_handler("heartbeat", lambda data: 
+        esp32_manager.update_device_from_heartbeat(data)
+    )
+
     # Start the Jarvis brain
     await jarvis_brain.start()
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    mqtt_bridge.disconnect()
     await jarvis_brain.stop()
     logger.info("Jarvis API server stopped")
 
@@ -429,6 +469,231 @@ async def wake_up():
 async def start_listening():
     await jarvis_brain._transition(JarvisState.LISTENING, "API request")
     return {"state": jarvis_brain.state.value}
+
+
+# ================================================================
+# ESP32 Device Management Routes
+# ================================================================
+@app.get("/api/esp32/devices")
+async def get_devices():
+    """Get all registered ESP32 devices and their health."""
+    return esp32_manager.get_device_health()
+
+
+@app.get("/api/esp32/summary")
+async def get_esp32_summary():
+    """Get a high-level summary of all ESP32 devices."""
+    return esp32_manager.get_summary()
+
+
+@app.get("/api/esp32/health")
+async def esp32_health_check():
+    """Ping all ESP32 devices."""
+    return await esp32_manager.health_check()
+
+
+@app.get("/api/esp32/mqtt/stats")
+async def mqtt_stats():
+    """Get MQTT bridge statistics."""
+    return mqtt_bridge.get_stats()
+
+
+@app.get("/api/esp32/mqtt/devices")
+async def mqtt_devices():
+    """Get devices tracked by MQTT bridge."""
+    return mqtt_bridge.get_all_devices()
+
+
+@app.get("/api/esp32/mqtt/messages")
+async def mqtt_messages(count: int = Query(50, ge=1, le=200), topic: str = Query(None)):
+    """Get recent MQTT messages."""
+    return mqtt_bridge.get_recent_messages(count, topic)
+
+
+# ---- Server Control ----
+@app.get("/api/esp32/server/status")
+async def esp32_server_status():
+    """Get ESP32 server status."""
+    return await esp32_manager.get_server_status() or {"error": "Server unreachable"}
+
+
+@app.get("/api/esp32/server/sensors")
+async def esp32_server_sensors():
+    """Get sensor readings from ESP32 server."""
+    return await esp32_manager.get_sensors() or {"error": "unavailable"}
+
+
+@app.get("/api/esp32/server/heartbeat")
+async def esp32_server_heartbeat():
+    """Get Jarvis heartbeat from ESP32 server."""
+    return await esp32_manager.get_heartbeat() or {"error": "unavailable"}
+
+
+@app.post("/api/esp32/server/relay/{relay_id}")
+async def esp32_set_relay(relay_id: int, state: bool = Query(True)):
+    """Control a relay on the ESP32 server."""
+    result = await esp32_manager.set_relay(relay_id, state)
+    return result or {"error": "failed"}
+
+
+@app.post("/api/esp32/server/relay/{relay_id}/toggle")
+async def esp32_toggle_relay(relay_id: int):
+    """Toggle a relay on the ESP32 server."""
+    return await esp32_manager.toggle_relay(relay_id) or {"error": "failed"}
+
+
+@app.post("/api/esp32/server/relays/all")
+async def esp32_all_relays(state: bool = Query(True)):
+    """Set all relays."""
+    return await esp32_manager.set_all_relays(state) or {"error": "failed"}
+
+
+@app.get("/api/esp32/server/door")
+async def esp32_door_status():
+    """Get door sensor status."""
+    return await esp32_manager.get_door_status() or {"error": "unavailable"}
+
+
+@app.post("/api/esp32/server/lock")
+async def esp32_set_lock(locked: bool = Query(True)):
+    """Control the servo lock."""
+    return await esp32_manager.set_lock(locked) or {"error": "failed"}
+
+
+@app.post("/api/esp32/server/lock/toggle")
+async def esp32_toggle_lock():
+    """Toggle the lock."""
+    return await esp32_manager.toggle_lock() or {"error": "failed"}
+
+
+@app.get("/api/esp32/server/schedules")
+async def esp32_get_schedules():
+    """Get all schedules."""
+    return await esp32_manager.get_schedules() or {"error": "unavailable"}
+
+
+@app.post("/api/esp32/server/schedule/add")
+async def esp32_add_schedule(
+    relay: int = Query(...),
+    hour: int = Query(...),
+    minute: int = Query(...),
+    action: int = Query(1),
+    days: int = Query(0x7F),
+    repeat: int = Query(1),
+):
+    """Add a new schedule."""
+    return await esp32_manager.add_schedule(relay, hour, minute, action, days, repeat) or {"error": "failed"}
+
+
+@app.post("/api/esp32/server/schedule/delete/{schedule_id}")
+async def esp32_delete_schedule(schedule_id: int):
+    """Delete a schedule."""
+    return await esp32_manager.delete_schedule(schedule_id) or {"error": "failed"}
+
+
+@app.post("/api/esp32/server/buzz")
+async def esp32_buzz(pattern: str = Query("alert")):
+    """Trigger buzzer."""
+    return await esp32_manager.buzz(pattern) or {"error": "failed"}
+
+
+# ---- Camera Control ----
+@app.get("/api/esp32/camera/status")
+async def esp32_cam_status():
+    """Get ESP32-CAM status."""
+    return await esp32_manager.get_camera_status() or {"error": "unavailable"}
+
+
+@app.get("/api/esp32/camera/jarvis")
+async def esp32_cam_jarvis_status():
+    """Get Jarvis-specific camera status."""
+    return await esp32_manager.get_jarvis_cam_status() or {"error": "unavailable"}
+
+
+@app.get("/api/esp32/camera/detect")
+async def esp32_cam_detect():
+    """Trigger a capture + AI detection on the camera."""
+    return await esp32_manager.trigger_detection() or {"error": "failed"}
+
+
+@app.get("/api/esp32/camera/capture")
+async def esp32_cam_capture():
+    """Capture a JPEG image from the camera."""
+    image_data = await esp32_manager.capture_image()
+    if image_data:
+        return StreamingResponse(
+            iter([image_data]),
+            media_type="image/jpeg",
+            headers={"Content-Disposition": "inline; filename=capture.jpg"}
+        )
+    raise HTTPException(503, "Camera unavailable")
+
+
+@app.get("/api/esp32/camera/stream-url")
+async def esp32_cam_stream_url():
+    """Get the camera MJPEG stream URL."""
+    url = await esp32_manager.get_stream_url()
+    return {"stream_url": url}
+
+
+# ---- MQTT-based commands (faster, fire-and-forget) ----
+@app.post("/api/esp32/mqtt/relay")
+async def mqtt_relay(relay: int = Query(...), state: bool = Query(True)):
+    """Control relay via MQTT (fire-and-forget)."""
+    success = mqtt_bridge.set_relay(relay, state)
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/lock")
+async def mqtt_lock(locked: bool = Query(True)):
+    """Control lock via MQTT."""
+    success = mqtt_bridge.set_lock(locked)
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/capture")
+async def mqtt_capture(context: str = Query("jarvis")):
+    """Trigger camera capture via MQTT."""
+    success = mqtt_bridge.trigger_capture(context)
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/patrol")
+async def mqtt_patrol(enabled: bool = Query(True)):
+    """Start/stop patrol mode via MQTT."""
+    if enabled:
+        success = mqtt_bridge.start_patrol()
+    else:
+        success = mqtt_bridge.stop_patrol()
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/intruder-mode")
+async def mqtt_intruder_mode(enabled: bool = Query(True)):
+    """Enable/disable intruder mode via MQTT."""
+    success = mqtt_bridge.set_intruder_mode(enabled)
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/identify")
+async def mqtt_identify():
+    """Request face identification via MQTT."""
+    success = mqtt_bridge.request_identify()
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/scene")
+async def mqtt_scene(name: str = Query(...)):
+    """Activate a scene via MQTT."""
+    success = mqtt_bridge.activate_scene(name)
+    return {"sent": success}
+
+
+@app.post("/api/esp32/mqtt/buzz")
+async def mqtt_buzz(pattern: str = Query("alert")):
+    """Trigger buzzer via MQTT."""
+    success = mqtt_bridge.buzz_alert(pattern)
+    return {"sent": success}
 
 
 # ================================================================

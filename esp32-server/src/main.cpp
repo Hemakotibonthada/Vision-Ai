@@ -1,9 +1,11 @@
 /*
  * =============================================================
- * Vision-AI ESP32 Server - Main Controller
+ * Vision-AI + Jarvis  ESP32 Server — Main Controller  v3.0
  * =============================================================
  * Features: WiFi AP/STA, MQTT, WebSocket, REST API, OTA,
- *           Sensors, GPIO, BLE, Power Management, System Monitor
+ *           Sensors, GPIO 8-Relay, BLE, Power Management,
+ *           System Monitor, Door Sensor, Servo Lock, IR Blaster,
+ *           Scheduled Tasks, Jarvis AI Heartbeat & Integration
  * =============================================================
  */
 
@@ -15,6 +17,7 @@
 #include <ArduinoJson.h>
 #include <SPIFFS.h>
 #include <time.h>
+#include <ESP32Servo.h>
 
 #include "config.h"
 #include "wifi_manager.h"
@@ -41,12 +44,39 @@ SystemMonitor sysMon;
 AsyncWebServer server(HTTP_PORT);
 AsyncWebSocket ws("/ws");
 
+// ---- Door Sensor ----
+volatile bool doorStateChanged = false;
+volatile bool doorOpen = false;
+unsigned long lastDoorEvent = 0;
+
+// ---- Servo Lock ----
+Servo lockServo;
+bool lockEngaged = true;
+
+// ---- Schedule System ----
+struct ScheduleEntry {
+    uint8_t relay;       // 1-8, or 0xFF = all
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t daysMask;    // bit0=Sun .. bit6=Sat
+    uint8_t action;      // 0=off, 1=on, 2=toggle
+    uint8_t enabled;
+    uint8_t repeat;      // 0=once, 1=daily, 2=weekdays, 3=weekends
+    uint8_t sceneIdx;    // if 0xFF ➜ normal relay action, else load scene
+};
+ScheduleEntry schedules[MAX_SCHEDULES];
+int scheduleCount = 0;
+
+// ---- Boot counter ----
+uint32_t bootCount = 0;
+
 // ============================================
 // Task Handles (FreeRTOS)
 // ============================================
 TaskHandle_t sensorTaskHandle = NULL;
 TaskHandle_t mqttTaskHandle = NULL;
 TaskHandle_t monitorTaskHandle = NULL;
+TaskHandle_t scheduleTaskHandle = NULL;
 
 // ============================================
 // Rate Limiting
@@ -84,6 +114,217 @@ bool authenticate(AsyncWebServerRequest* request) {
     
     request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
     return false;
+}
+
+// ============================================
+// Door Sensor ISR (magnetic reed switch)
+// ============================================
+void IRAM_ATTR doorISR() {
+    unsigned long now = millis();
+    if (now - lastDoorEvent > DOOR_DEBOUNCE_MS) {
+        doorOpen = (digitalRead(PIN_DOOR_SENSOR) == HIGH);
+        doorStateChanged = true;
+        lastDoorEvent = now;
+    }
+}
+
+void handleDoorEvent() {
+    if (!doorStateChanged) return;
+    doorStateChanged = false;
+
+    String state = doorOpen ? "open" : "closed";
+    Serial.printf("[Door] State: %s\n", state.c_str());
+
+    // Publish to Jarvis via MQTT
+    StaticJsonDocument<256> doc;
+    doc["event"]  = "door";
+    doc["state"]  = state;
+    doc["timestamp"] = millis();
+    doc["device"] = MQTT_CLIENT_ID;
+    char buf[256];
+    serializeJson(doc, buf);
+    mqttMgr.publish(TOPIC_JARVIS_DOOR, buf);
+
+    // Also broadcast on WebSocket
+    ws.textAll("{\"type\":\"door\",\"state\":\"" + state + "\"}");
+
+    if (doorOpen) {
+        gpioMgr.buzzPattern("relay");          // short beep
+        sysMon.log("INFO", "Door opened");
+    } else {
+        sysMon.log("INFO", "Door closed");
+    }
+}
+
+// ============================================
+// Servo Lock (SG90 on GPIO26)
+// ============================================
+void initServoLock() {
+    lockServo.attach(PIN_SERVO_LOCK, 500, 2400);
+    // Restore lock state from EEPROM
+    uint8_t saved = EEPROM.read(EEPROM_LOCK_STATE_ADDR);
+    lockEngaged = (saved != 0);
+    lockServo.write(lockEngaged ? SERVO_LOCK_ANGLE : SERVO_UNLOCK_ANGLE);
+    Serial.printf("[Lock] Initialized — %s\n", lockEngaged ? "LOCKED" : "UNLOCKED");
+}
+
+void setLock(bool lock) {
+    lockEngaged = lock;
+    lockServo.write(lock ? SERVO_LOCK_ANGLE : SERVO_UNLOCK_ANGLE);
+    EEPROM.write(EEPROM_LOCK_STATE_ADDR, lock ? 1 : 0);
+    EEPROM.commit();
+
+    StaticJsonDocument<128> doc;
+    doc["event"] = "lock";
+    doc["state"] = lock ? "locked" : "unlocked";
+    doc["timestamp"] = millis();
+    char buf[128];
+    serializeJson(doc, buf);
+    mqttMgr.publish(TOPIC_JARVIS_LOCK, buf);
+
+    ws.textAll("{\"type\":\"lock\",\"state\":\"" + String(lock ? "locked" : "unlocked") + "\"}");
+    gpioMgr.buzzPattern(lock ? "relay" : "success");
+    Serial.printf("[Lock] %s\n", lock ? "LOCKED" : "UNLOCKED");
+}
+
+// ============================================
+// Schedule System
+// ============================================
+void loadSchedules() {
+    for (int i = 0; i < MAX_SCHEDULES; i++) {
+        int addr = EEPROM_SCHEDULE_ADDR + i * 8;
+        schedules[i].relay    = EEPROM.read(addr + 0);
+        schedules[i].hour     = EEPROM.read(addr + 1);
+        schedules[i].minute   = EEPROM.read(addr + 2);
+        schedules[i].daysMask = EEPROM.read(addr + 3);
+        schedules[i].action   = EEPROM.read(addr + 4);
+        schedules[i].enabled  = EEPROM.read(addr + 5);
+        schedules[i].repeat   = EEPROM.read(addr + 6);
+        schedules[i].sceneIdx = EEPROM.read(addr + 7);
+        if (schedules[i].enabled == 1) scheduleCount++;
+    }
+    Serial.printf("[Sched] Loaded %d active schedules\n", scheduleCount);
+}
+
+void saveSchedule(int idx) {
+    if (idx < 0 || idx >= MAX_SCHEDULES) return;
+    int addr = EEPROM_SCHEDULE_ADDR + idx * 8;
+    EEPROM.write(addr + 0, schedules[idx].relay);
+    EEPROM.write(addr + 1, schedules[idx].hour);
+    EEPROM.write(addr + 2, schedules[idx].minute);
+    EEPROM.write(addr + 3, schedules[idx].daysMask);
+    EEPROM.write(addr + 4, schedules[idx].action);
+    EEPROM.write(addr + 5, schedules[idx].enabled);
+    EEPROM.write(addr + 6, schedules[idx].repeat);
+    EEPROM.write(addr + 7, schedules[idx].sceneIdx);
+    EEPROM.commit();
+}
+
+String getSchedulesJSON() {
+    String json = "[";
+    bool first = true;
+    for (int i = 0; i < MAX_SCHEDULES; i++) {
+        if (schedules[i].enabled != 1) continue;
+        if (!first) json += ",";
+        first = false;
+        json += "{\"id\":" + String(i) +
+                ",\"relay\":" + String(schedules[i].relay) +
+                ",\"hour\":" + String(schedules[i].hour) +
+                ",\"minute\":" + String(schedules[i].minute) +
+                ",\"days\":" + String(schedules[i].daysMask) +
+                ",\"action\":" + String(schedules[i].action) +
+                ",\"repeat\":" + String(schedules[i].repeat) +
+                ",\"scene\":" + String(schedules[i].sceneIdx) + "}";
+    }
+    json += "]";
+    return json;
+}
+
+void checkSchedules() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) return;
+
+    int wday = timeinfo.tm_wday; // 0=Sun
+    int hour = timeinfo.tm_hour;
+    int minute = timeinfo.tm_min;
+
+    for (int i = 0; i < MAX_SCHEDULES; i++) {
+        if (schedules[i].enabled != 1) continue;
+        if (schedules[i].hour != hour || schedules[i].minute != minute) continue;
+        if (!(schedules[i].daysMask & (1 << wday))) continue;
+
+        // Execute
+        if (schedules[i].sceneIdx != 0xFF) {
+            gpioMgr.loadScene(schedules[i].sceneIdx);
+            sysMon.log("INFO", "Schedule: loaded scene " + String(schedules[i].sceneIdx));
+        } else {
+            uint8_t r = schedules[i].relay;
+            uint8_t a = schedules[i].action;
+            if (r == 0xFF) {
+                gpioMgr.setAllRelays(a == 1);
+            } else if (a == 2) {
+                gpioMgr.toggleRelay(r);
+            } else {
+                gpioMgr.setRelay(r, a == 1);
+            }
+            sysMon.log("INFO", "Schedule: relay " + String(r) + " → " + String(a));
+        }
+
+        // If one-shot, disable
+        if (schedules[i].repeat == 0) {
+            schedules[i].enabled = 0;
+            saveSchedule(i);
+        }
+
+        // Publish event
+        StaticJsonDocument<128> doc;
+        doc["event"] = "schedule_fired";
+        doc["id"] = i;
+        char buf[128];
+        serializeJson(doc, buf);
+        mqttMgr.publish(TOPIC_JARVIS_SCHED, buf);
+    }
+}
+
+// Schedule FreeRTOS task — checks once per minute
+void scheduleTask(void* parameter) {
+    Serial.println("[Task] Schedule task started on core " + String(xPortGetCoreID()));
+    int lastMinute = -1;
+    for (;;) {
+        struct tm ti;
+        if (getLocalTime(&ti) && ti.tm_min != lastMinute) {
+            lastMinute = ti.tm_min;
+            checkSchedules();
+        }
+        vTaskDelay(pdMS_TO_TICKS(10000)); // check every 10 s
+    }
+}
+
+// ============================================
+// Heartbeat — periodic ping to Jarvis server
+// ============================================
+void sendHeartbeat() {
+    StaticJsonDocument<512> doc;
+    doc["device"]   = MQTT_CLIENT_ID;
+    doc["firmware"]  = FIRMWARE_VERSION;
+    doc["uptime"]    = millis() / 1000;
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["rssi"]      = WiFi.RSSI();
+    doc["ip"]        = wifiMgr.getLocalIP();
+    doc["door"]      = doorOpen ? "open" : "closed";
+    doc["lock"]      = lockEngaged ? "locked" : "unlocked";
+    doc["boot_count"]= bootCount;
+    doc["relays"]    = gpioMgr.getRelayBitmask();
+    doc["temperature"] = sensorMgr.getTemperature();
+    doc["humidity"]    = sensorMgr.getHumidity();
+    doc["motion"]      = sensorMgr.getMotion();
+    doc["voltage"]     = sensorMgr.getVoltage();
+    doc["current"]     = sensorMgr.getCurrent();
+    doc["light"]       = sensorMgr.getLight();
+
+    char buf[512];
+    serializeJson(doc, buf);
+    mqttMgr.publish(TOPIC_JARVIS_HEARTBEAT, buf);
 }
 
 // ============================================
@@ -185,6 +426,17 @@ void handleWebSocketMessage(AsyncWebSocketClient* client, const String& message)
     else if (strcmp(action, "ping") == 0) {
         client->text("{\"type\":\"pong\",\"timestamp\":" + String(millis()) + "}");
     }
+    else if (strcmp(action, "set_lock") == 0) {
+        bool state = doc["state"] | false;
+        setLock(state);
+        client->text("{\"type\":\"lock\",\"state\":\"" + String(state ? "locked" : "unlocked") + "\"}");
+    }
+    else if (strcmp(action, "get_door") == 0) {
+        client->text("{\"type\":\"door\",\"state\":\"" + String(doorOpen ? "open" : "closed") + "\"}");
+    }
+    else if (strcmp(action, "get_schedules") == 0) {
+        client->text("{\"type\":\"schedules\",\"data\":" + getSchedulesJSON() + "}");
+    }
 }
 
 void broadcastSensorData() {
@@ -219,8 +471,62 @@ void onMQTTMessage(const char* topic, const char* payload) {
         }
     }
     else if (topicStr == TOPIC_CONFIG) {
-        // Handle configuration updates
         sysMon.log("INFO", "Config update received");
+    }
+    // ---- Jarvis Commands ----
+    else if (topicStr == TOPIC_JARVIS_CMD) {
+        const char* cmd = doc["command"];
+        if (!cmd) return;
+
+        if (strcmp(cmd, "relay") == 0) {
+            int relay = doc["relay"] | 1;
+            bool state = doc["state"] | false;
+            gpioMgr.setRelay(relay, state);
+            gpioMgr.buzzPattern("relay");
+            sysMon.log("INFO", "Jarvis: relay " + String(relay) + " → " + String(state));
+        }
+        else if (strcmp(cmd, "relay_room") == 0) {
+            const char* room = doc["room"] | "";
+            bool state = doc["state"] | false;
+            gpioMgr.setRelayByRoom(room, state);
+            gpioMgr.buzzPattern("relay");
+        }
+        else if (strcmp(cmd, "all_relays") == 0) {
+            bool state = doc["state"] | false;
+            gpioMgr.setAllRelays(state);
+        }
+        else if (strcmp(cmd, "lock") == 0) {
+            bool state = doc["state"] | true;
+            setLock(state);
+        }
+        else if (strcmp(cmd, "unlock") == 0) {
+            setLock(false);
+        }
+        else if (strcmp(cmd, "buzz") == 0) {
+            const char* pattern = doc["pattern"] | "alert";
+            gpioMgr.buzzPattern(pattern);
+        }
+        else if (strcmp(cmd, "scene") == 0) {
+            int scene = doc["scene"] | 0;
+            gpioMgr.loadScene(scene);
+        }
+        else if (strcmp(cmd, "status") == 0) {
+            sendHeartbeat(); // reply with full status
+        }
+        else if (strcmp(cmd, "restart") == 0) {
+            mqttMgr.publish(TOPIC_JARVIS_EVENT, "{\"event\":\"restarting\"}");
+            delay(500);
+            ESP.restart();
+        }
+
+        // Publish relay state back
+        StaticJsonDocument<256> reply;
+        reply["device"] = MQTT_CLIENT_ID;
+        reply["event"]  = "command_executed";
+        reply["command"] = cmd;
+        char rbuf[256];
+        serializeJson(reply, rbuf);
+        mqttMgr.publish(TOPIC_JARVIS_EVENT, rbuf);
     }
 }
 
@@ -464,6 +770,97 @@ void setupAPI() {
         request->send(200, "application/json", "{\"status\":\"settings_sent\"}");
     });
 
+    // ---- Door Sensor Endpoints ----
+    server.on((String(API_PREFIX) + "/door/status").c_str(), HTTP_GET, [](AsyncWebServerRequest* request) {
+        String json = "{\"door\":\"" + String(doorOpen ? "open" : "closed") + 
+                      "\",\"lock\":\"" + String(lockEngaged ? "locked" : "unlocked") + "\"}";
+        request->send(200, "application/json", json);
+    });
+
+    // ---- Lock Endpoints ----
+    server.on((String(API_PREFIX) + "/lock/set").c_str(), HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) return;
+        bool state = true;
+        if (request->hasParam("state")) state = request->getParam("state")->value() == "1";
+        setLock(state);
+        request->send(200, "application/json", "{\"lock\":\"" + String(state ? "locked" : "unlocked") + "\"}");
+    });
+
+    server.on((String(API_PREFIX) + "/lock/toggle").c_str(), HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) return;
+        setLock(!lockEngaged);
+        request->send(200, "application/json", "{\"lock\":\"" + String(lockEngaged ? "locked" : "unlocked") + "\"}");
+    });
+
+    // ---- Schedule Endpoints ----
+    server.on((String(API_PREFIX) + "/schedules").c_str(), HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send(200, "application/json", getSchedulesJSON());
+    });
+
+    server.on((String(API_PREFIX) + "/schedules/add").c_str(), HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) return;
+        // Find an empty slot
+        int slot = -1;
+        for (int i = 0; i < MAX_SCHEDULES; i++) {
+            if (schedules[i].enabled != 1) { slot = i; break; }
+        }
+        if (slot < 0) {
+            request->send(400, "application/json", "{\"error\":\"No free schedule slots\"}");
+            return;
+        }
+        schedules[slot].relay    = request->hasParam("relay")  ? request->getParam("relay")->value().toInt()  : 0xFF;
+        schedules[slot].hour     = request->hasParam("hour")   ? request->getParam("hour")->value().toInt()   : 0;
+        schedules[slot].minute   = request->hasParam("minute") ? request->getParam("minute")->value().toInt() : 0;
+        schedules[slot].daysMask = request->hasParam("days")   ? request->getParam("days")->value().toInt()   : 0x7F;
+        schedules[slot].action   = request->hasParam("action") ? request->getParam("action")->value().toInt() : 1;
+        schedules[slot].enabled  = 1;
+        schedules[slot].repeat   = request->hasParam("repeat") ? request->getParam("repeat")->value().toInt() : 1;
+        schedules[slot].sceneIdx = request->hasParam("scene")  ? request->getParam("scene")->value().toInt()  : 0xFF;
+        saveSchedule(slot);
+        scheduleCount++;
+        request->send(200, "application/json", "{\"id\":" + String(slot) + ",\"status\":\"added\"}");
+    });
+
+    server.on((String(API_PREFIX) + "/schedules/delete").c_str(), HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (!authenticate(request)) return;
+        int id = 0;
+        if (request->hasParam("id")) id = request->getParam("id")->value().toInt();
+        if (id >= 0 && id < MAX_SCHEDULES) {
+            schedules[id].enabled = 0;
+            saveSchedule(id);
+            scheduleCount--;
+            request->send(200, "application/json", "{\"id\":" + String(id) + ",\"status\":\"deleted\"}");
+        } else {
+            request->send(400, "application/json", "{\"error\":\"Invalid schedule id\"}");
+        }
+    });
+
+    // ---- Jarvis Heartbeat Endpoint (AI server can pull) ----
+    server.on((String(API_PREFIX) + "/jarvis/heartbeat").c_str(), HTTP_GET, [](AsyncWebServerRequest* request) {
+        StaticJsonDocument<512> doc;
+        doc["device"]     = MQTT_CLIENT_ID;
+        doc["firmware"]   = FIRMWARE_VERSION;
+        doc["uptime"]     = millis() / 1000;
+        doc["free_heap"]  = ESP.getFreeHeap();
+        doc["rssi"]       = WiFi.RSSI();
+        doc["ip"]         = wifiMgr.getLocalIP();
+        doc["door"]       = doorOpen ? "open" : "closed";
+        doc["lock"]       = lockEngaged ? "locked" : "unlocked";
+        doc["boot_count"] = bootCount;
+        doc["relays"]     = gpioMgr.getRelayBitmask();
+        doc["temperature"]= sensorMgr.getTemperature();
+        doc["humidity"]   = sensorMgr.getHumidity();
+        doc["motion"]     = sensorMgr.getMotion();
+        doc["voltage"]    = sensorMgr.getVoltage();
+        doc["current"]    = sensorMgr.getCurrent();
+        doc["light"]      = sensorMgr.getLight();
+        doc["schedules"]  = scheduleCount;
+
+        char buf[512];
+        serializeJson(doc, buf);
+        request->send(200, "application/json", buf);
+    });
+
     // ---- 404 Handler ----
     server.onNotFound([](AsyncWebServerRequest* request) {
         if (request->method() == HTTP_OPTIONS) {
@@ -622,6 +1019,28 @@ void setup() {
     
     // Initialize sensors
     sensorMgr.begin();
+
+    // Initialize door sensor with interrupt
+    pinMode(PIN_DOOR_SENSOR, INPUT_PULLUP);
+    doorOpen = (digitalRead(PIN_DOOR_SENSOR) == LOW);
+    attachInterrupt(digitalPinToInterrupt(PIN_DOOR_SENSOR), doorISR, CHANGE);
+    sysMon.log("INFO", "Door sensor initialized (" + String(doorOpen ? "OPEN" : "CLOSED") + ")");
+
+    // Initialize servo lock (restores state from EEPROM)
+    initServoLock();
+    sysMon.log("INFO", "Servo lock initialized (" + String(lockEngaged ? "LOCKED" : "UNLOCKED") + ")");
+
+    // Load schedules from EEPROM
+    loadSchedules();
+    sysMon.log("INFO", "Loaded " + String(scheduleCount) + " schedules");
+
+    // Increment boot counter
+    bootCount = EEPROM.read(BOOT_COUNT_ADDR) | (EEPROM.read(BOOT_COUNT_ADDR + 1) << 8);
+    bootCount++;
+    EEPROM.write(BOOT_COUNT_ADDR, bootCount & 0xFF);
+    EEPROM.write(BOOT_COUNT_ADDR + 1, (bootCount >> 8) & 0xFF);
+    EEPROM.commit();
+    sysMon.log("INFO", "Boot count: " + String(bootCount));
     
     // Initialize WiFi (try STA first, fallback to AP)
     if (!wifiMgr.connectSTA()) {
@@ -639,6 +1058,10 @@ void setup() {
     mqttMgr.begin();
     mqttMgr.setCallback(onMQTTMessage);
     mqttMgr.connect();
+
+    // Subscribe to Jarvis command topic
+    mqttMgr.subscribe(TOPIC_JARVIS_CMD);
+    sysMon.log("INFO", "Subscribed to Jarvis command topic");
     
     // Initialize OTA
     otaMgr.begin();
@@ -664,6 +1087,8 @@ void setup() {
     xTaskCreatePinnedToCore(sensorTask, "SensorTask", 4096, NULL, 2, &sensorTaskHandle, 0);
     xTaskCreatePinnedToCore(mqttTask, "MQTTTask", 4096, NULL, 1, &mqttTaskHandle, 1);
     xTaskCreatePinnedToCore(monitorTask, "MonitorTask", 4096, NULL, 1, &monitorTaskHandle, 0);
+    xTaskCreatePinnedToCore(scheduleTask, "ScheduleTask", 4096, NULL, 1, &scheduleTaskHandle, 0);
+    sysMon.log("INFO", "Schedule task created");
     
     // Setup watchdog
     esp_task_wdt_init(WATCHDOG_TIMEOUT, true);
@@ -698,6 +1123,16 @@ void loop() {
     
     // Handle BLE
     bleMgr.handle();
+
+    // Handle door sensor events (ISR-triggered)
+    handleDoorEvent();
+
+    // Periodic heartbeat to Jarvis
+    static unsigned long lastHeartbeat = 0;
+    if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        lastHeartbeat = millis();
+        sendHeartbeat();
+    }
     
     // Handle button events (single button cycles through relays)
     if (gpioMgr.isButtonPressed()) {

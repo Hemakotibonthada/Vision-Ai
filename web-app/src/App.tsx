@@ -10,6 +10,7 @@ import Analytics from './pages/Analytics';
 import Devices from './pages/Devices';
 import Alerts from './pages/Alerts';
 import Settings from './pages/Settings';
+import ESP32Control from './pages/ESP32Control';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -34,6 +35,7 @@ export default function App() {
                 <Route path="/devices" element={<Devices />} />
                 <Route path="/alerts" element={<Alerts />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/esp32" element={<ESP32Control />} />
               </Routes>
             </Layout>
           </ProtectedRoute>

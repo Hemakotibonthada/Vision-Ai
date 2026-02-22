@@ -4,7 +4,7 @@ import { useAppStore, useAuthStore } from '../store';
 import { wsService } from '../services/websocket';
 import {
   LayoutDashboard, Video, Search, Brain, BarChart3, Cpu, Bell, Settings,
-  Menu, X, LogOut, Sun, Moon, Wifi, WifiOff
+  Menu, X, LogOut, Sun, Moon, Wifi, WifiOff, CircuitBoard
 } from 'lucide-react';
 
 const navItems = [
@@ -14,6 +14,7 @@ const navItems = [
   { path: '/training', label: 'Training', icon: Brain },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/devices', label: 'Devices', icon: Cpu },
+  { path: '/esp32', label: 'ESP32 Control', icon: CircuitBoard },
   { path: '/alerts', label: 'Alerts', icon: Bell },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

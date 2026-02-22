@@ -31,3 +31,9 @@ loguru>=0.7.0
 
 # Image handling
 Pillow>=10.0.0
+
+# MQTT
+paho-mqtt>=1.6.1
+
+# Async HTTP (for ESP32 management)
+aiohttp>=3.9.0
