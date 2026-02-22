@@ -27,6 +27,7 @@ from jarvis.services.learning_service import learning_service
 from jarvis.services.command_processor import command_processor
 from jarvis.services.mqtt_bridge_service import MQTTBridgeService
 from jarvis.services.esp32_manager_service import ESP32ManagerService
+from jarvis.smart_routes import router as smart_router
 
 # Initialize MQTT bridge and ESP32 manager
 mqtt_bridge = MQTTBridgeService(
@@ -59,6 +60,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register Smart Home routes
+app.include_router(smart_router)
 
 # Serve dashboard
 DASHBOARD_PATH = os.path.join(os.path.dirname(__file__), "dashboard.html")

@@ -127,3 +127,108 @@ export const useTrainingStore = create<TrainingState>((set) => ({
       metrics: data.metrics || {},
     }),
 }));
+
+// ---- Vision AI Store (Features 1-25) ----
+interface VisionState {
+  anomalies: any[];
+  emotionHistory: any[];
+  gestureResults: any[];
+  sceneResults: any[];
+  qualityScores: any[];
+  safetyAlerts: any[];
+  addAnomaly: (a: any) => void;
+  addEmotion: (e: any) => void;
+  addGesture: (g: any) => void;
+  addSceneResult: (s: any) => void;
+  addQualityScore: (q: any) => void;
+  addSafetyAlert: (s: any) => void;
+  clearAnomalies: () => void;
+}
+
+export const useVisionStore = create<VisionState>((set) => ({
+  anomalies: [],
+  emotionHistory: [],
+  gestureResults: [],
+  sceneResults: [],
+  qualityScores: [],
+  safetyAlerts: [],
+  addAnomaly: (a) => set((s) => ({ anomalies: [a, ...s.anomalies].slice(0, 100) })),
+  addEmotion: (e) => set((s) => ({ emotionHistory: [e, ...s.emotionHistory].slice(0, 50) })),
+  addGesture: (g) => set((s) => ({ gestureResults: [g, ...s.gestureResults].slice(0, 50) })),
+  addSceneResult: (s_) => set((s) => ({ sceneResults: [s_, ...s.sceneResults].slice(0, 50) })),
+  addQualityScore: (q) => set((s) => ({ qualityScores: [q, ...s.qualityScores].slice(0, 50) })),
+  addSafetyAlert: (a) => set((s) => ({ safetyAlerts: [a, ...s.safetyAlerts].slice(0, 100) })),
+  clearAnomalies: () => set({ anomalies: [] }),
+}));
+
+// ---- Smart Home Store (Features 26-50) ----
+interface SmartHomeState {
+  weather: any | null;
+  energy: any | null;
+  scenes: any[];
+  guests: any[];
+  habits: any[];
+  emergencyActive: boolean;
+  geofences: any[];
+  tasks: any[];
+  setWeather: (w: any) => void;
+  setEnergy: (e: any) => void;
+  setScenes: (s: any[]) => void;
+  addGuest: (g: any) => void;
+  setGuests: (g: any[]) => void;
+  setHabits: (h: any[]) => void;
+  setEmergencyActive: (v: boolean) => void;
+  setGeofences: (g: any[]) => void;
+  setTasks: (t: any[]) => void;
+}
+
+export const useSmartHomeStore = create<SmartHomeState>((set) => ({
+  weather: null,
+  energy: null,
+  scenes: [],
+  guests: [],
+  habits: [],
+  emergencyActive: false,
+  geofences: [],
+  tasks: [],
+  setWeather: (w) => set({ weather: w }),
+  setEnergy: (e) => set({ energy: e }),
+  setScenes: (s) => set({ scenes: s }),
+  addGuest: (g) => set((s) => ({ guests: [...s.guests, g] })),
+  setGuests: (g) => set({ guests: g }),
+  setHabits: (h) => set({ habits: h }),
+  setEmergencyActive: (v) => set({ emergencyActive: v }),
+  setGeofences: (g) => set({ geofences: g }),
+  setTasks: (t) => set({ tasks: t }),
+}));
+
+// ---- Automation Store (Features 51-75) ----
+interface AutomationState {
+  rules: any[];
+  events: any[];
+  logs: any[];
+  backups: any[];
+  privacySettings: any;
+  addRule: (r: any) => void;
+  setRules: (r: any[]) => void;
+  setEvents: (e: any[]) => void;
+  addLog: (l: any) => void;
+  setLogs: (l: any[]) => void;
+  setBackups: (b: any[]) => void;
+  setPrivacySettings: (p: any) => void;
+}
+
+export const useAutomationStore = create<AutomationState>((set) => ({
+  rules: [],
+  events: [],
+  logs: [],
+  backups: [],
+  privacySettings: { faceBlur: true, plateBlur: true, encryption: false, retention: 30 },
+  addRule: (r) => set((s) => ({ rules: [...s.rules, r] })),
+  setRules: (r) => set({ rules: r }),
+  setEvents: (e) => set({ events: e }),
+  addLog: (l) => set((s) => ({ logs: [l, ...s.logs].slice(0, 500) })),
+  setLogs: (l) => set({ logs: l }),
+  setBackups: (b) => set({ backups: b }),
+  setPrivacySettings: (p) => set({ privacySettings: p }),
+}));

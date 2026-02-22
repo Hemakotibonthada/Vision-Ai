@@ -1,6 +1,6 @@
 """
 Vision-AI Engine - Main Application Entry Point
-Comprehensive AI-powered vision system with 325+ features
+Comprehensive AI-powered vision system with 425+ features
 """
 import asyncio
 import json
@@ -153,7 +153,7 @@ async def lifespan(app: FastAPI):
 # ---- Create App ----
 app = FastAPI(
     title="Vision-AI Engine",
-    description="Comprehensive AI-powered IoT Vision System with 325+ features",
+    description="Comprehensive AI-powered IoT Vision System with 425+ features",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -197,12 +197,14 @@ from app.routes.training_routes import router as training_router
 from app.routes.analytics_routes import router as analytics_router
 from app.routes.device_routes import router as device_router
 from app.routes.auth_routes import router as auth_router
+from app.routes.vision_routes import router as vision_router
 
 app.include_router(detection_router, prefix="/api/v1")
 app.include_router(training_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
 app.include_router(device_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(vision_router, prefix="/api/v1")
 
 
 # ---- WebSocket Endpoints ----
@@ -282,7 +284,7 @@ async def root():
     return {
         "name": "Vision-AI Engine",
         "version": "1.0.0",
-        "features": 325,
+        "features": 425,
         "status": "running",
         "docs": "/docs",
         "websocket": "/ws/{channel}",

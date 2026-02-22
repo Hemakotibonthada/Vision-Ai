@@ -4,18 +4,36 @@ import { useAppStore, useAuthStore } from '../store';
 import { wsService } from '../services/websocket';
 import {
   LayoutDashboard, Video, Search, Brain, BarChart3, Cpu, Bell, Settings,
-  Menu, X, LogOut, Sun, Moon, Wifi, WifiOff, CircuitBoard
+  Menu, X, LogOut, Sun, Moon, Wifi, WifiOff, CircuitBoard,
+  Zap, Grid3X3, Clock, FileText, Map, GitCompare, Users, Hand,
+  Shield, HardDrive, Activity, Image, Layers, HeartPulse
 } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/live', label: 'Live Feed', icon: Video },
   { path: '/detection', label: 'Detection', icon: Search },
+  { path: '/cameras', label: 'Camera Grid', icon: Grid3X3 },
   { path: '/training', label: 'Training', icon: Brain },
   { path: '/analytics', label: 'Analytics', icon: BarChart3 },
   { path: '/devices', label: 'Devices', icon: Cpu },
   { path: '/esp32', label: 'ESP32 Control', icon: CircuitBoard },
+  { path: '/automation', label: 'Automation', icon: Zap },
+  { path: '/timeline', label: 'Timeline', icon: Clock },
+  { path: '/heatmap', label: 'Heatmap/Map', icon: Map },
+  { path: '/models', label: 'AI Models', icon: GitCompare },
+  { path: '/stats', label: 'Stats & Reports', icon: BarChart3 },
+  { path: '/gestures', label: 'Gestures', icon: Hand },
+  { path: '/annotate', label: 'Annotator', icon: Image },
+  { path: '/batch', label: 'Batch Ops', icon: Layers },
+  { path: '/activity', label: 'Activity', icon: Activity },
+  { path: '/notifications', label: 'Notifications', icon: Bell },
   { path: '/alerts', label: 'Alerts', icon: Bell },
+  { path: '/logs', label: 'System Logs', icon: FileText },
+  { path: '/health', label: 'System Health', icon: HeartPulse },
+  { path: '/users', label: 'Users', icon: Users },
+  { path: '/privacy', label: 'Privacy', icon: Shield },
+  { path: '/backups', label: 'Backups', icon: HardDrive },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
