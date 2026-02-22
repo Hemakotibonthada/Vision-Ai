@@ -39,20 +39,15 @@ def configure_logging():
 def print_banner():
     """Print Jarvis startup banner."""
     banner = """
-    ╔══════════════════════════════════════════════════════════╗
-    ║                                                          ║
-    ║         ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗         ║
-    ║         ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝         ║
-    ║         ██║███████║██████╔╝██║   ██║██║███████╗         ║
-    ║    ██   ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║         ║
-    ║    ╚█████╔╝██║  ██║██║  ██║ ╚████╔╝ ██║███████║         ║
-    ║     ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝         ║
-    ║                                                          ║
-    ║           AI Home Assistant v1.0.0                       ║
-    ║           Face Recognition • Voice Control               ║
-    ║           Security • Smart Home • Learning               ║
-    ║                                                          ║
-    ╚══════════════════════════════════════════════════════════╝
+    ============================================================
+    |                                                          |
+    |              J A R V I S   A I                           |
+    |                                                          |
+    |           AI Home Assistant v1.0.0                       |
+    |           Face Recognition | Voice Control               |
+    |           Security | Smart Home | Learning               |
+    |                                                          |
+    ============================================================
     """
     print(banner)
     print(f"  API Server:    http://localhost:{settings.JARVIS_PORT}")

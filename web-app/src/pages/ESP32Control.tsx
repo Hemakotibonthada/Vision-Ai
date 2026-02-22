@@ -282,8 +282,17 @@ export default function ESP32ControlPanel() {
       </div>
 
       {/* Tab Content */}
-      {activeTab === 'server' && heartbeat && (
+      {activeTab === 'server' && (
         <div className="space-y-6">
+          {!heartbeat && (
+            <div className="bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+              <div className="text-4xl mb-4">📡</div>
+              <h3 className="text-lg font-semibold mb-2">ESP32 Server Offline</h3>
+              <p className="text-gray-400 text-sm">No heartbeat received. The ESP32 server is not connected or the MQTT broker is not running.</p>
+              <p className="text-gray-500 text-xs mt-2">Relay controls and sensor data will appear once the device connects.</p>
+            </div>
+          )}
+          {heartbeat && (<div className="space-y-6">
           {/* Sensors */}
           <div>
             <h3 className="text-lg font-semibold mb-3">Sensors</h3>
@@ -349,6 +358,7 @@ export default function ESP32ControlPanel() {
               <SensorCard icon="📋" label="Schedules" value={heartbeat.schedules} />
             </div>
           </div>
+        </div>)}
         </div>
       )}
 
@@ -406,8 +416,16 @@ export default function ESP32ControlPanel() {
         </div>
       )}
 
-      {activeTab === 'mqtt' && mqttStats && (
+      {activeTab === 'mqtt' && (
         <div className="space-y-6">
+          {!mqttStats && (
+            <div className="bg-gray-800 rounded-xl p-8 text-center border border-gray-700">
+              <div className="text-4xl mb-4">🔌</div>
+              <h3 className="text-lg font-semibold mb-2">MQTT Bridge Offline</h3>
+              <p className="text-gray-400 text-sm">The MQTT bridge service is not connected. Stats and device data will appear once the broker is available.</p>
+            </div>
+          )}
+          {mqttStats && (<div className="space-y-6">
           <div>
             <h3 className="text-lg font-semibold mb-3">MQTT Bridge Statistics</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -446,6 +464,7 @@ export default function ESP32ControlPanel() {
               </table>
             </div>
           </div>
+        </div>)}
         </div>
       )}
     </div>

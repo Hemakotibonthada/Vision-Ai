@@ -99,6 +99,7 @@ class JarvisSettings(BaseSettings):
         env_file = ".env"
         env_prefix = "JARVIS_"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = JarvisSettings()
